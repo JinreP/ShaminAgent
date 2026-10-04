@@ -12,15 +12,21 @@ export function readDatabaseEnv(source: Record<string, string | undefined> = pro
   return result.data;
 }
 export const merchantEnvSchema = databaseEnvSchema.extend({
-  MERCHANT_AI_PROVIDER: z.enum(["gemini", "oyullm"]).default("gemini"),
+  MERCHANT_AI_PROVIDER: z.enum(["gemini", "oyullm"]).optional(),
+  AI_PROVIDER: z.enum(["gemini", "oyu"]).optional(),
   GEMINI_API_KEY: optional, GEMINI_MODEL: optional,
+  GEMINI_STRUCTURED_OUTPUT_MODE: z.enum(["json", "schema"]).default("json"),
   MERCHANT_SPEECH_PROVIDER: z.enum(["disabled", "anir"]).default("disabled"),
 }).superRefine((v, ctx) => {
-  if (v.MERCHANT_AI_PROVIDER === "gemini") {
+  const selected = v.AI_PROVIDER === "oyu" ? "oyullm" : v.AI_PROVIDER;
+  if (selected && v.MERCHANT_AI_PROVIDER && selected !== v.MERCHANT_AI_PROVIDER)
+    ctx.addIssue({ code: "custom", path: ["AI_PROVIDER"], message: "AI provider configuration conflicts" });
+  if ((selected ?? v.MERCHANT_AI_PROVIDER ?? "gemini") === "gemini") {
     for (const key of ["GEMINI_API_KEY", "GEMINI_MODEL"] as const)
       if (!v[key]) ctx.addIssue({ code: "custom", path: [key], message: "Required for Gemini" });
   }
-});
+}).transform(v => ({ ...v, MERCHANT_AI_PROVIDER: v.AI_PROVIDER === "oyu" ? "oyullm" as const :
+  v.AI_PROVIDER ?? v.MERCHANT_AI_PROVIDER ?? "gemini" as const }));
 export type MerchantEnv = z.infer<typeof merchantEnvSchema>;
 export function readMerchantEnv(source: Record<string, string | undefined> = process.env): MerchantEnv {
   const result = merchantEnvSchema.safeParse(source);

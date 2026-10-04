@@ -137,3 +137,36 @@ request hash, анхны envelope болон committed response хадгална
 болон merchant scope шаардлагатай; dashboard merchant нэвтрэлт тусдаа хэвээр.
 Жишээ, auth тохиргоо, давхардлын дүрэм, disposable MongoDB тест:
 [merchant-phase3.md](merchant-phase3.md).
+
+## Phase 4 нэмэлт гэрээ
+
+RFQ болон Quote-ийн strict v1 fields хэвээр. Telegram-ийн private draft/binding
+contracts нь Buyer-д serialize хийх payload биш. `merchant/telegram/contracts.ts`
+нь одоогийн A2A `SendMessage` data part-д additive
+`{contractVersion:"1",action:"get_quote_updates",rfqId,afterRevision}` request болон
+`quoteUpdatesResponseSchema` нэмнэ. Response-д original correlationId,
+latestRevision болон `{quote:QuoteV1,source:"automatic"|"human_confirmed"}` entries
+байна. Repair entry-ийн optional serviceWindow нь confirmation үеийн slot-ийн
+immutable snapshot; booking/reservation биш. Энэ wrapper-ийг нэмсэн бөгөөд Quote
+schema-д source эсвэл Telegram metadata нэмээгүй.
+
+Buyer identity баталгаажсан A2A token-оос, merchant scope route/auth-аас гарна.
+Retrieval нь persisted RFQ-ийн buyer ownership-ийг шалгана. Анхны RFQ replay
+Phase 3 cached response-г хэвээр буцаана; async human quote авахын тулд шинэ
+action хэрэглэнэ. Agent Card-д нэмэлт quote-updates skill байна; таван discovery,
+Card болон endpoint хаяг хэвээр. Production Buyer код өөрчлөгдөөгүй.
+
+Audit action-д `telegram_binding_issued`, `telegram_bound`, `telegram_revoked`,
+`telegram_draft_created`, `telegram_draft_rejected`, `telegram_draft_confirmed`,
+`quote_published`, `telegram_notified` нэмсэн. RFQ/Quote/audit records-д TTL
+нэмээгүй; registration, update dedupe, conversation болон message-link temporary
+records тусдаа expiry policy-той. Provider interface нь optional structured JSON
+request fields-ээр additive өргөжсөн. `AI_PROVIDER=gemini|oyu` нь өмнөх
+`MERCHANT_AI_PROVIDER=gemini|oyullm` сонголттой нийцэн ажиллана.
+`GEMINI_STRUCTURED_OUTPUT_MODE=json` default нь JSON MIME + prompt guidance,
+strict server-side Zod validation хэрэглэнэ; `schema` нь official responseSchema
+opt-in. Upstream full schema compatibility болон server-side validation нь
+тусдаа баталгаажуулалт болохыг Buyer интеграцид анхаарна.
+
+Buyer SDK жишээ, authentication, webhook/polling setup, persistence policy болон
+тестийн төлөв: [merchant-phase4.md](merchant-phase4.md).

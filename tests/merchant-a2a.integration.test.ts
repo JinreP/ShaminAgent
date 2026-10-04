@@ -10,7 +10,8 @@ import { createMerchantRFQProcessor } from "../merchant/a2a/service";
 import { seedDemoMerchants } from "../merchant/server/seed";
 import { MerchantAdminStore } from "../merchant/server/admin-store";
 import type { MerchantRFQEnvelope } from "../merchant/a2a/contracts";
-import { merchantBuyerClient, sendMerchantRFQ } from "./helpers/merchant-buyer";
+import { merchantBuyerClient, sendMerchantRFQ, sendNegotiation, getNegotiationResult } from "./helpers/merchant-buyer";
+import type { NegotiationRequest } from "../merchant/negotiation/contracts";
 
 test("official Buyer SDK exchanges A2A over HTTP with a disposable local MongoDB replica set", {
   skip: process.env.MERCHANT_A2A_LOCAL_INTEGRATION !== "true", timeout: 600000,
@@ -85,6 +86,25 @@ test("official Buyer SDK exchanges A2A over HTTP with a disposable local MongoDB
         assert.match(response.message, /[\u0400-\u04ff]/u);
         assert.ok(!/minimumPrice|maxDiscountBps|minimum.*acceptable/.test(JSON.stringify(response)));
       }
+    });
+    await t.test("Buyer SDK receives structured negotiation outcomes and retrieves durable results over A2A", async () => {
+      const merchantId = "demo-prius-parts", agent = agents.get(merchantId)!;
+      await db.collection("merchant_settings").updateOne({ merchantId, id: merchantId },
+        { $set: { humanApprovalRequired: false, automaticNegotiationEnabled: true } });
+      const input = envelope(merchantId, "a2a-negotiation");
+      const original = await send(input);
+      assert.ok(original.quote);
+      const negotiation: NegotiationRequest = { contractVersion: "1", action: "negotiate_quote", rfqId: input.rfq.id,
+        correlationId: input.correlationId, expiresAt: new Date(Date.now() + 600000).toISOString(),
+        negotiation: { contractVersion: "1", id: "a2a-negotiation-1", merchantId, buyerId,
+          createdAt: new Date(Date.now() - 1000).toISOString(), quoteId: original.quote.id, quoteRevision: original.quote.revision,
+          requestedTotal: { amountMinor: 64000000, currency: "MNT" }, status: "requested" } };
+      const result = await sendNegotiation(agent, negotiation);
+      assert.equal(result.outcome, "accepted");
+      assert.equal(result.quote?.revision, original.quote.revision + 1);
+      assert.equal(result.quote?.reservation, false);
+      assert.deepEqual(await getNegotiationResult(agent, input.rfq.id, negotiation.negotiation.id), result);
+      assert.ok(!/minimumPrice|maxDiscountBps/.test(JSON.stringify(result)));
     });
     await t.test("auth, invalid schemas and payload scopes reject before private reads", async () => {
       const endpoint = `${origin}/api/a2a/demo-prius-parts`;

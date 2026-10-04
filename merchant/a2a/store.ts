@@ -135,6 +135,14 @@ export class MongoRFQStore {
           requestHash, envelope, correlationId: envelope.correlationId, status: response.outcome,
           response, quoteRevision: response.quote?.revision ?? null, createdAt: completedAt, completedAt,
         }), { session });
+        // Durable notification intent is committed with the RFQ. No Telegram call runs in a database transaction.
+        if (!["expired", "failed"].includes(response.outcome) && dataNotificationEligible(profileDocument, envelope)) {
+          await this.db.collection("merchant_telegram_notifications").insertOne(structuredClone({
+            contractVersion: "1", merchantId, id: `n-${hash([merchantId, rfq.id]).slice(0, 40)}`,
+            rfqId: rfq.id, correlationId: envelope.correlationId, envelope, createdAt: completedAt,
+            status: "pending", nextAttemptAt: now, attempts: 0,
+          }), { session });
+        }
         return response;
       }, { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } });
       if (!result) throw new Error("Хүсэлтийн үр дүнг хадгалах боломжгүй байна.");
@@ -151,4 +159,8 @@ export class MongoRFQStore {
       await session.endSession();
     }
   }
+}
+
+function dataNotificationEligible(profile: Document | null, envelope: MerchantRFQEnvelope): boolean {
+  return Boolean(profile?.active && profile.merchantId === envelope.rfq.merchantId && profile.kind === envelope.rfq.kind);
 }

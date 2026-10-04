@@ -3,7 +3,7 @@ import { AgentCard } from "@a2a-js/sdk";
 import { DEMO_MERCHANTS } from "../demo-merchants";
 
 export const A2A_PROTOCOL_VERSION = "1.0" as const;
-export const A2A_AGENT_VERSION = "3.0.0" as const;
+export const A2A_AGENT_VERSION = "5.0.0" as const;
 
 export function isA2AMerchant(merchantId: string): boolean {
   return DEMO_MERCHANTS.some(merchant => merchant.id === merchantId);
@@ -42,6 +42,16 @@ export function getMerchantAgentCard(merchantId: string, origin: string): AgentC
         : "Өөрийн үйлчилгээ, хөдөлмөрийн үнэ, боломжит цагаар гупер солих, зүүн гэрэл солих, гупер будах үнийн санал гаргана.",
       tags: parts ? ["Тоёота Приус 30", "сэлбэг", "гупер", "гэрэл"] : ["Тоёота Приус 30", "засвар", "будаг"],
       examples: parts ? ["Приус 30 автомашины урд гуперийн үнийн санал авах."] : ["Приус 30 автомашины гупер солих засварын үнийн санал авах."],
+      inputModes: ["application/json"], outputModes: ["application/json"], securityRequirements,
+    }, {
+      id: `${merchant.id}-quote-updates`, name: "Баталгаажсан үнийн саналын шинэчлэлт",
+      description: "Өөрийн хүсэлтийн автомат болон хүний баталгаажуулсан саналыг хувилбараар авна. get_quote_updates бүтэцтэй хүсэлт хэрэглэнэ.",
+      tags: ["үнийн санал", "шинэчлэлт"], examples: ["Миний хүсэлтийн шинэ үнийн саналыг авах."],
+      inputModes: ["application/json"], outputModes: ["application/json"], securityRequirements,
+    }, {
+      id: `${merchant.id}-negotiation`, name: "Үнийн хэлэлцээ",
+      description: "Өөрийн хүчинтэй үнийн саналд хэлэлцээ хүсэж, зөвшөөрсөн, эсрэг үнэ эсвэл татгалзсан үр дүнг авна. Хүний шийдвэрийг дараа нь шалгаж болно.",
+      tags: ["үнийн хэлэлцээ", "хүний зөвшөөрөл"], examples: ["Миний хүчинтэй үнийн саналын үнийг хэлэлцэх."],
       inputModes: ["application/json"], outputModes: ["application/json"], securityRequirements,
     }],
     signatures: [],

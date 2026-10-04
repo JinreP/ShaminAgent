@@ -78,6 +78,7 @@ export default function MerchantDashboard() {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [telegramConnected, setTelegramConnected] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -86,7 +87,8 @@ export default function MerchantDashboard() {
         if (cancelled) return;
         setAuthenticated(true); setSelected(session.merchantId);
         const data = await api("dashboard");
-        if (!cancelled) setSnapshot(data);
+        const telegram = await api("telegram");
+        if (!cancelled) { setSnapshot(data); setTelegramConnected(telegram.connected); }
       } catch (e) { if (!cancelled) setError(e instanceof Error ? merchantErrorMessage(e.message) : "Худалдаачны самбарыг ачаалж чадсангүй."); }
       finally { if (!cancelled) setBusy(false); }
     })();
@@ -100,10 +102,42 @@ export default function MerchantDashboard() {
   async function login(event: FormEvent) { event.preventDefault(); await run(async () => {
     await api("session", "POST", { action: "login", merchantId: selected, accessKey });
     setAccessKey(""); setAuthenticated(true); setSnapshot(await api("dashboard"));
+    setTelegramConnected((await api("telegram")).connected);
   }); }
   async function switchMerchant(id: string) {
-    setSnapshot(null); setEdit(null); setTab("profile");
-    await run(async () => { await api("session", "POST", { action: "switch", merchantId: id }); setSelected(id); setSnapshot(await api("dashboard")); });
+    setSnapshot(null); setEdit(null); setTab("profile"); setTelegramConnected(false);
+    await run(async () => {
+      await api("session", "POST", { action: "switch", merchantId: id });
+      setSelected(id); setSnapshot(await api("dashboard")); setTelegramConnected((await api("telegram")).connected);
+    });
+  }
+  async function connectTelegram() {
+    await run(async () => {
+      const result = await api("telegram", "POST");
+      const deepLink = new URL(result.deepLink);
+      if (deepLink.protocol !== "https:" || deepLink.hostname !== "t.me") throw new Error("Телеграмын холбоос буруу байна.");
+      window.location.assign(deepLink.toString());
+    });
+  }
+  async function refreshTelegramStatus() {
+    await run(async () => {
+      setTelegramConnected((await api("telegram")).connected);
+      setMessage("Телеграмын холболтын төлөвийг шинэчиллээ.");
+    });
+  }
+  async function disconnectTelegram() {
+    await run(async () => {
+      await api("telegram", "DELETE");
+      setTelegramConnected(false);
+      setMessage("Телеграмын холболтыг салгалаа.");
+    });
+  }
+  async function updateCommerceProgress(kind: "order" | "booking", entityId: string, status: "preparing" | "ready" | "completed" | "in_service") {
+    await run(async () => {
+      await api("commerce", "PATCH", { kind, entityId, status });
+      setSnapshot(await api("dashboard"));
+      setMessage("Захиалгын гүйцэтгэлийн төлөвийг шинэчиллээ.");
+    });
   }
   const entries: Versioned[] = !snapshot ? [] : tab === "profile" ? [snapshot.profile] : tab === "inventory" ? snapshot.inventory : tab === "service" ? snapshot.services : tab === "slot" ? snapshot.slots : tab === "settings" ? (snapshot.settings ? [snapshot.settings] : []) : [];
   const tabs: Tab[] = ["profile", ...(snapshot?.profile.record.kind === "repair" ? ["service", "slot"] as Tab[] : ["inventory"] as Tab[]), "settings", "activity"];
@@ -114,9 +148,21 @@ export default function MerchantDashboard() {
     {error && <p role="alert" className={styles.error}>{error}</p>}{message && <p role="status" className={styles.success}>{message}</p>}
     {!authenticated ? <form className={styles.login} onSubmit={login}><h2>Худалдаачны туршилтыг нээх</h2><p>Хөгжүүлэгчийн тохируулсан дотоод хандалтын түлхүүрийг ашиглана уу. Бодит орчны хандалт хаалттай.</p><label>Туршилтын худалдаачин<select disabled={busy} value={selected} onChange={e => setSelected(e.target.value)}>{DEMO_MERCHANTS.map(m => <option value={m.id} key={m.id}>{m.name}</option>)}</select></label><label>Туршилтын хандалтын түлхүүр<input disabled={busy} required type="password" autoComplete="off" value={accessKey} onChange={e => setAccessKey(e.target.value)} /></label><button disabled={busy}>{busy ? "Ачаалж байна…" : "Самбар нээх"}</button></form> : <>
       <div className={styles.toolbar}><label>Туршилтын худалдаачин сонгох<select disabled={busy} value={selected} onChange={e => void switchMerchant(e.target.value)}>{DEMO_MERCHANTS.map(m => <option value={m.id} key={m.id}>{m.name}</option>)}</select></label><button disabled={busy} className={styles.secondary} onClick={() => void run(async () => { setEdit(null); setSnapshot(await api("dashboard")); })}>Бүртгэл дахин ачаалах</button><button disabled={busy} className={styles.secondary} onClick={() => void run(async () => { await api("session", "POST", { action: "logout" }); setSnapshot(null); setEdit(null); setAuthenticated(false); })}>Гарах</button></div>
+      <section className={styles.panel} aria-labelledby="telegram-connection-title">
+        <h2 id="telegram-connection-title">Телеграм холболт</h2>
+        <p role="status">Төлөв: {telegramConnected ? "Холбогдсон" : "Холбогдоогүй"}</p>
+        {!telegramConnected && <button disabled={busy} onClick={() => void connectTelegram()}>Телеграм холбох</button>}
+        <button disabled={busy} className={styles.secondary} onClick={() => void refreshTelegramStatus()}>Төлөв шинэчлэх</button>
+        {telegramConnected && <button disabled={busy} className={styles.secondary} onClick={() => void disconnectTelegram()}>Холболт салгах</button>}
+        <p>Холбох үед богино хугацаанд хүчинтэй нэг удаагийн холбоос үүснэ. Бот дээрх Start товчийг дарна уу.</p>
+      </section>
       {snapshot && <><div className={styles.metrics}><div><small>Худалдаачны төрөл</small><strong>{statusLabel(snapshot.profile.record.kind)}</strong></div><div><small>Сэлбэг / үйлчилгээ</small><strong>{snapshot.inventory.length + snapshot.services.length}</strong></div><div><small>Боломжтой цаг</small><strong>{snapshot.slots.filter(s => s.record.status === "available").length}</strong></div><div><small>Гүйлгээ</small><strong>{snapshot.transactions.length}</strong></div></div>
       <nav className={styles.tabs} aria-label="Худалдаачны удирдлага">{tabs.map(t => <button disabled={busy} key={t} aria-current={tab === t ? "page" : undefined} className={tab === t ? styles.selectedTab : styles.secondary} onClick={() => { setTab(t); setEdit(null); setMessage(""); }}>{labels[t]}</button>)}</nav>
-      {tab === "activity" ? <div className={styles.activity}>{(["rfqs", "quotes", "transactions"] as const).map(key => <div className={styles.panel} key={key}><h2>{key === "rfqs" ? "Үнийн хүсэлт" : key === "quotes" ? "Үнийн санал" : "Гүйлгээ"}</h2><p>Зөвхөн харах · энэ худалдаачны сүүлийн 100 хүртэлх бүртгэл</p>{snapshot[key].length === 0 ? <p>Одоогоор бүртгэл алга.</p> : snapshot[key].map(record => <article key={record.id}><strong>{record.id}</strong><p>{statusLabel(record.status)} · {new Date(record.createdAt).toLocaleString("mn-MN")}</p>{"total" in record && <p>{record.total.currency} {(record.total.amountMinor / 100).toLocaleString("mn-MN")}</p>}</article>)}</div>)}</div> : <div className={styles.workarea}><div className={styles.panel}><h2>{labels[tab]}</h2><p>{tab === "profile" ? "Нийтийн боломжийн хайлтаар нийтлэгдэнэ. Нөөц болон үнэ харагдахгүй." : "Худалдаачны хувийн мэдээлэл. Өөрчлөлт хяналтын бүртгэлийн хамт хадгалагдана."}</p>{entries.map(entry => <button disabled={busy} className={styles.recordButton} key={entry.record.id} onClick={() => setEdit(entry)}><strong>{"name" in entry.record ? localizeKnownText(entry.record.name, "Бүртгэл") : "startsAt" in entry.record ? new Date(entry.record.startsAt).toLocaleString("mn-MN") : "Үнийн тохиргоо"}</strong><small>{"stock" in entry.record ? `${entry.record.stock} ширхэг` : "active" in entry.record ? (entry.record.active ? "Идэвхтэй" : "Идэвхгүй") : "status" in entry.record ? statusLabel(entry.record.status) : "Хувийн"} · хувилбар {entry.version}</small></button>)}{tab !== "profile" && (tab !== "settings" || !snapshot.settings) && <button disabled={busy} onClick={() => setEdit({ record: newRecord(tab, snapshot.merchantId), version: 0 })}>{labels[tab]} нэмэх</button>}</div>
+      {tab === "activity" ? <div className={styles.activity}>{(["rfqs", "quotes", "transactions"] as const).map(key => <div className={styles.panel} key={key}><h2>{key === "rfqs" ? "Үнийн хүсэлт" : key === "quotes" ? "Үнийн санал" : "Гүйлгээ"}</h2><p>Зөвхөн харах · энэ худалдаачны сүүлийн 100 хүртэлх бүртгэл</p>{snapshot[key].length === 0 ? <p>Одоогоор бүртгэл алга.</p> : snapshot[key].map(record => <article key={record.id}><strong>{record.id}</strong><p>{statusLabel(record.status)} · {new Date(record.createdAt).toLocaleString("mn-MN")}</p>{"total" in record && <p>{record.total.currency} {(record.total.amountMinor / 100).toLocaleString("mn-MN")}</p>}</article>)}</div>)}
+        <div className={styles.panel}><h2>Сэлбэгийн захиалга</h2>{snapshot.commerceOrders.length === 0 ? <p>Одоогоор захиалга алга.</p> : snapshot.commerceOrders.map(order => <article key={order.id}><strong>{order.id}</strong><p>Төлөв: {statusLabel(order.status)} · Төлбөр: {statusLabel(order.payment)}</p><p>{order.lines.map(line => `${line.resourceId} · ${line.quantity} ширхэг`).join("; ")}</p><p>{order.total.currency} {(order.total.amountMinor / 100).toLocaleString("mn-MN")}</p>{order.status === "reserved" && <button disabled={busy} onClick={() => void updateCommerceProgress("order", order.id, "preparing")}>Бэлтгэж эхлэх</button>}{order.status === "preparing" && <button disabled={busy} onClick={() => void updateCommerceProgress("order", order.id, "ready")}>Бэлэн болгох</button>}{order.status === "ready" && <button disabled={busy} onClick={() => void updateCommerceProgress("order", order.id, "completed")}>Гүйцэтгэсэн</button>}</article>)}</div>
+        <div className={styles.panel}><h2>Засварын цаг захиалга</h2>{snapshot.commerceBookings.length === 0 ? <p>Одоогоор захиалга алга.</p> : snapshot.commerceBookings.map(booking => <article key={booking.id}><strong>{booking.id}</strong><p>Төлөв: {statusLabel(booking.status)} · Төлбөр: {statusLabel(booking.payment)}</p><p>{new Date(booking.startsAt).toLocaleString("mn-MN")} – {new Date(booking.endsAt).toLocaleString("mn-MN")}</p>{booking.status === "booked" && <button disabled={busy} onClick={() => void updateCommerceProgress("booking", booking.id, "in_service")}>Засвар эхлүүлэх</button>}{booking.status === "in_service" && <button disabled={busy} onClick={() => void updateCommerceProgress("booking", booking.id, "completed")}>Засвар дуусгах</button>}</article>)}</div>
+        <div className={styles.panel}><h2>Захиалгын гүйлгээ</h2>{snapshot.commerceTransactions.length === 0 ? <p>Одоогоор гүйлгээ алга.</p> : snapshot.commerceTransactions.map(transaction => <article key={transaction.id}><strong>{transaction.id}</strong><p>{statusLabel(transaction.kind)} · {statusLabel(transaction.status)} · {statusLabel(transaction.progress)}</p><p>Төлбөр: {transaction.paymentId ? "Туршилтын төлбөр бүртгэгдсэн" : "Төлбөр бүртгэгдээгүй"}</p></article>)}</div>
+      </div> : <div className={styles.workarea}><div className={styles.panel}><h2>{labels[tab]}</h2><p>{tab === "profile" ? "Нийтийн боломжийн хайлтаар нийтлэгдэнэ. Нөөц болон үнэ харагдахгүй." : "Худалдаачны хувийн мэдээлэл. Өөрчлөлт хяналтын бүртгэлийн хамт хадгалагдана."}</p>{entries.map(entry => <button disabled={busy} className={styles.recordButton} key={entry.record.id} onClick={() => setEdit(entry)}><strong>{"name" in entry.record ? localizeKnownText(entry.record.name, "Бүртгэл") : "startsAt" in entry.record ? new Date(entry.record.startsAt).toLocaleString("mn-MN") : "Үнийн тохиргоо"}</strong><small>{"stock" in entry.record ? `${entry.record.stock} ширхэг` : "active" in entry.record ? (entry.record.active ? "Идэвхтэй" : "Идэвхгүй") : "status" in entry.record ? statusLabel(entry.record.status) : "Хувийн"} · хувилбар {entry.version}</small></button>)}{tab !== "profile" && (tab !== "settings" || !snapshot.settings) && <button disabled={busy} onClick={() => setEdit({ record: newRecord(tab, snapshot.merchantId), version: 0 })}>{labels[tab]} нэмэх</button>}</div>
       {current && <Editor key={`${snapshot.merchantId}-${tab}-${current.record.id}-${current.version}`} resource={tab} entry={current} services={snapshot.services} busy={busy} onSave={async (record, version) => { await run(async () => { await api("dashboard", "PUT", { resource: tab, record, expectedVersion: version }); setSnapshot(await api("dashboard")); setEdit(null); setMessage("Өөрчлөлтийг хяналтын бүртгэлийн хамт хадгаллаа."); }); }} />}</div>}</>}
     </>}
   </div>;

@@ -7,6 +7,7 @@ import { adminSchemas, type AdminResource, type AdminRecord, type Versioned, typ
 import { assertMerchantScope } from "./repository";
 import { assertDemoMerchant, MerchantAccessError } from "./demo-auth";
 import { fieldLabels, localizeKnownText, localizedAdminFields, merchantName } from "../i18n";
+import { CommerceStore } from "../commerce/store";
 
 export const adminCollections = { profile: "merchant_profiles", inventory: "merchant_inventory",
   service: "merchant_services", slot: "merchant_slots", settings: "merchant_settings" } as const;
@@ -49,10 +50,12 @@ export class MerchantAdminStore {
       ...(["merchant_rfqs", "merchant_quotes", "merchant_transactions"] as const).map(name =>
         this.db.collection(name).find({ merchantId: this.merchantId }, { projection: { _id: 0 } }).sort({ createdAt: -1 }).limit(100).toArray()),
     ]);
+    const commerce = await new CommerceStore(this.client, this.db).merchantTransactions(this.merchantId);
     const profile = profiles[0];
     if (!profile || profile.record.mode !== "simulated") throw new MerchantAccessError("Run the demo seed before using the dashboard", 503);
     return { merchantId: this.merchantId, profile, inventory, services, slots, settings: settings[0] ?? null,
-      rfqs: rfqs.map(d => rfqSchema.parse(d)), quotes: quotes.map(d => quoteSchema.parse(d)), transactions: transactions.map(d => transactionSchema.parse(d)) };
+      rfqs: rfqs.map(d => rfqSchema.parse(d)), quotes: quotes.map(d => quoteSchema.parse(d)), transactions: transactions.map(d => transactionSchema.parse(d)),
+      commerceOrders: commerce.orders, commerceBookings: commerce.bookings, commerceTransactions: commerce.transactions };
   }
   async save(resource: AdminResource, input: unknown, expectedVersion: number): Promise<void> {
     const record = adminSchemas[resource].parse(input);
