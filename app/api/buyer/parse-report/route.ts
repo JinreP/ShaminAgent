@@ -250,6 +250,7 @@ export async function POST(request: Request) {
       {
         result: result.data,
         reportId,
+        requestId: reportId,
       },
       {
         headers: {
