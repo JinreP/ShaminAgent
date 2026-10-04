@@ -122,3 +122,18 @@ validation is retained. The dashboard does not require Gemini credentials.
 Local-only demo access, setup and limitations are described in
 [merchant-phase2.md](merchant-phase2.md). Production merchant authentication
 is not implemented and demo access is always rejected in production.
+
+## Phase 3 нэмэлт гэрээ
+
+RFQ болон Quote-ийн v1 талбарууд хэвээр. Audit action-д `rfq_processed`,
+`rfq_failed` нэмэгдсэн. `merchant/a2a/contracts.ts` нь хугацаа болон correlation ID
+агуулсан RFQ envelope, public response/issue schema нэмнэ. Шинэ
+`merchant_rfq_processing` collection нь merchantId/id unique index, canonical
+request hash, анхны envelope болон committed response хадгална.
+
+Бие даасан A2A 1.0 endpoint-ууд `/api/a2a/{merchantId}`, Card-ууд
+`/api/a2a/{merchantId}/.well-known/agent-card.json`, discovery
+`/api/a2a/discovery` хаягтай. Албан ёсны SDK ашиглана. Buyer-ийн signed identity
+болон merchant scope шаардлагатай; dashboard merchant нэвтрэлт тусдаа хэвээр.
+Жишээ, auth тохиргоо, давхардлын дүрэм, disposable MongoDB тест:
+[merchant-phase3.md](merchant-phase3.md).

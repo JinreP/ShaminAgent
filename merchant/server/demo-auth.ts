@@ -15,8 +15,13 @@ export function demoConfig(source: Record<string, string | undefined> = process.
   const secret = source.MERCHANT_DEMO_SESSION_SECRET;
   const accessKey = source.MERCHANT_DEMO_ACCESS_KEY;
   const origin = source.MERCHANT_DEMO_ORIGIN;
-  if (!secret || secret.length < 32 || !accessKey || accessKey.length < 32 || !origin)
-    throw new MerchantAccessError("Merchant demo configuration is incomplete", 503);
+  const invalid = [
+    ...(!origin ? ["MERCHANT_DEMO_ORIGIN"] : []),
+    ...(!accessKey || accessKey.length < 32 ? ["MERCHANT_DEMO_ACCESS_KEY"] : []),
+    ...(!secret || secret.length < 32 ? ["MERCHANT_DEMO_SESSION_SECRET"] : []),
+  ];
+  if (!secret || !accessKey || !origin || invalid.length)
+    throw new MerchantAccessError(`Merchant demo configuration is incomplete: ${invalid.join(", ")}`, 503);
   let url: URL;
   try { url = new URL(origin); } catch { throw new MerchantAccessError("Invalid demo origin", 503); }
   if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || !["http:", "https:"].includes(url.protocol) || url.origin !== origin)

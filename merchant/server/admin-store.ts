@@ -6,6 +6,7 @@ import { merchantProfileSchema, auditEventSchema, rfqSchema, quoteSchema, transa
 import { adminSchemas, type AdminResource, type AdminRecord, type Versioned, type DashboardSnapshot } from "../private-contracts";
 import { assertMerchantScope } from "./repository";
 import { assertDemoMerchant, MerchantAccessError } from "./demo-auth";
+import { fieldLabels, localizeKnownText, localizedAdminFields, merchantName } from "../i18n";
 
 export const adminCollections = { profile: "merchant_profiles", inventory: "merchant_inventory",
   service: "merchant_services", slot: "merchant_slots", settings: "merchant_settings" } as const;
@@ -19,13 +20,21 @@ function versioned<K extends AdminResource>(resource: K, document: Document): Ve
 export function publicProfile(document: Document): MerchantProfile {
   // Explicit allowlist: even corrupted profile documents cannot publish private data.
   const { contractVersion, id, merchantId, createdAt, name, kind, mode, capabilities, location, active } = document;
-  return merchantProfileSchema.parse({ contractVersion, id, merchantId, createdAt, name, kind, mode, capabilities, location, active });
+  const profile = merchantProfileSchema.parse({ contractVersion, id, merchantId, createdAt, name, kind, mode, capabilities, location, active });
+  return { ...profile, name: localizeKnownText(profile.name, merchantName(profile.id)),
+    location: localizeKnownText(profile.location, "Худалдаачны байршил"),
+    capabilities: profile.capabilities.map(value => value === "Toyota Prius 30" ? value : localizeKnownText(value, "Худалдаачны үйлчилгээ")) };
 }
 export async function discoverMerchants(db: Db, kind?: "parts" | "repair", capability?: string) {
   const profiles = await db.collection("merchant_profiles").find({ active: true, ...(kind ? { kind } : {}) }, {
     projection: { _id: 0, contractVersion: 1, id: 1, merchantId: 1, createdAt: 1, name: 1, kind: 1, mode: 1, capabilities: 1, location: 1, active: 1 },
   }).sort({ id: 1 }).limit(100).toArray();
-  return profiles.map(publicProfile).filter(p => !capability || p.capabilities.some(c => c.toLowerCase().includes(capability.toLowerCase())));
+  const query = capability?.toLowerCase();
+  const localizedQuery = capability ? localizeKnownText(capability, capability).toLowerCase() : undefined;
+  return profiles.map(document => ({ public: publicProfile(document), originalCapabilities: document.capabilities as string[] }))
+    .filter(profile => !query || [...profile.public.capabilities, ...profile.originalCapabilities].some(value =>
+      value.toLowerCase().includes(query) || (localizedQuery && value.toLowerCase().includes(localizedQuery))))
+    .map(profile => profile.public);
 }
 // Only constructed after a verified demo session. Production must use a separate auth adapter.
 export class MerchantAdminStore {
@@ -49,6 +58,8 @@ export class MerchantAdminStore {
     const record = adminSchemas[resource].parse(input);
     assertMerchantScope(this.merchantId, record);
     if (record.mode !== "simulated") throw new MerchantAccessError("Demo edits require simulated data", 403);
+    const untranslated = localizedAdminFields(record as Record<string, unknown>, resource);
+    if (untranslated.length) throw new MerchantAccessError(`Монгол кириллээр оруулна уу: ${untranslated.map(field => fieldLabels[field]).join(", ")}.`, 400);
     z.number().int().nonnegative().parse(expectedVersion);
     const session = this.client.startSession();
     try {

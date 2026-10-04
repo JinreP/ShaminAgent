@@ -187,7 +187,8 @@ test("profile, service, slot and settings management persists independently", as
   await store.save("settings", { ...settings.record, maxDiscountBps: 250, negotiationEnabled: false }, settings.version);
   assert.equal((await store.list("settings"))[0].record.maxDiscountBps, 250);
   const profile = (await store.list("profile"))[0];
-  await store.save("profile", { ...profile.record, capabilities: ["Toyota Prius 30", "painting"], active: false }, profile.version);
+  await assert.rejects(store.save("profile", { ...profile.record, capabilities: ["Toyota Prius 30", "painting"] }, profile.version), /Монгол кирилл/);
+  await store.save("profile", { ...profile.record, capabilities: ["Toyota Prius 30", "Будах"], active: false }, profile.version);
   assert.equal((await discoverMerchants(db, "repair")).length, 1);
   assert.equal((await store.snapshot()).profile.record.active, false);
 });
