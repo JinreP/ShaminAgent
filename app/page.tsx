@@ -1,64 +1,109 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 
-type Goal = {
-  vehicle: string;
-  parts: string;
-  tasks: string;
-  budget: number;
-  days: number;
-  preference: string;
-};
+import { repairReportSchema } from "@/lib/repair-report";
+import {
+  buyerGoalSchema,
+  buyerQuoteSchema,
+  buyerReceiptSchema,
+  buyerHistorySchema,
+  type BuyerReceipt,
+} from "@/lib/buyer-types";
 
-type Quote = {
-  id: string;
-  partsMerchant: string;
-  repairMerchant: string;
-  kind: string;
-  parts: number;
-  labor: number;
-  total: number;
-  days: number;
-  warranty: string;
-  token: string;
-  revision: number;
-  expiresAt: number;
-  goal: Goal;
-};
+type Goal = z.infer<typeof buyerGoalSchema>;
 
-type Receipt = {
-  id: string;
-  orderId: string;
-  bookingId: string;
-  paymentId: string;
-  quote: Quote;
-  mode: string;
-  status: string;
-};
+// Санал дээр token заавал байна.
+// Хадгалсан receipt дээр token шаардлагагүй.
+const quoteSchema = buyerQuoteSchema.extend({
+  token: z.string().min(1),
+});
 
-const sampleReport =
-  "Toyota Prius 30. Урд бампер, зүүн урд гэрэл гэмтсэн. " +
-  "Сэлбэг солих, бампер будах шаардлагатай.";
+const quotesResponseSchema = z.object({
+  quotes: z.array(quoteSchema),
+});
+
+const negotiationResponseSchema = z.object({
+  quote: quoteSchema,
+  message: z.string(),
+});
+
+const confirmResponseSchema = z.object({
+  receipt: buyerReceiptSchema,
+});
+
+const parseResponseSchema = z.object({
+  result: repairReportSchema,
+  reportId: z.string().optional(),
+});
+
+type Quote = z.infer<typeof quoteSchema>;
+type Receipt = BuyerReceipt;
+
+const sampleReport = [
+  "Toyota Prius 30 автомашины оношилгооны тайлан.",
+  "",
+  "Урд бампер хагарсан.",
+  "Зүүн урд гэрлийн их бие гэмтсэн.",
+  "",
+  "Урд бампер болон зүүн урд гэрлийг солих шаардлагатай.",
+  "Шинэ бамперийг машины өнгөөр будах шаардлагатай.",
+].join("\n");
 
 const initialGoal: Goal = {
-  vehicle: "Toyota Prius 30",
-  parts: "Урд бампер, зүүн урд гэрэл",
-  tasks: "Солих, бампер будах",
-  budget: 1500000,
-  days: 3,
+  vehicle: "",
+  parts: "",
+  tasks: "",
+  budget: 0,
+  days: 0,
   preference: "Any",
 };
-
-const storageKey = "zahagent-buyer-demo-history-v1";
 
 function money(value: number) {
   return new Intl.NumberFormat("mn-MN").format(value) + "₮";
 }
 
-async function api(action: string, payload: object) {
-  const response = await fetch("/api/buyer", {
+function errorMessage(value: unknown, fallback: string) {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "error" in value &&
+    typeof value.error === "string"
+  ) {
+    return value.error;
+  }
+
+  return fallback;
+}
+
+async function requestJson(
+  url: string,
+  options?: RequestInit,
+): Promise<unknown> {
+  const response = await fetch(url, {
+    ...options,
+    cache: "no-store",
+  });
+
+  let data: unknown;
+
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error("Серверээс JSON хариулт ирсэнгүй. API route-аа шалгаарай.");
+  }
+
+  if (!response.ok) {
+    throw new Error(errorMessage(data, `Серверийн алдаа: ${response.status}`));
+  }
+
+  return data;
+}
+
+function api(action: string, payload: Record<string, unknown>) {
+  return requestJson("/api/buyer", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -68,69 +113,81 @@ async function api(action: string, payload: object) {
       ...payload,
     }),
   });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.error || "Серверийн алдаа.");
-  }
-
-  return data;
 }
 
 export default function Home() {
   const [report, setReport] = useState("");
-  const [goal, setGoal] = useState<Goal>(initialGoal);
+  const [goal, setGoal] = useState<Goal>({ ...initialGoal });
   const [step, setStep] = useState(1);
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selected, setSelected] = useState<Quote | null>(null);
 
-  const [target, setTarget] = useState(1480000);
+  const [target, setTarget] = useState(0);
   const [approved, setApproved] = useState(false);
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [history, setHistory] = useState<Receipt[]>([]);
   const [events, setEvents] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+
   const lock = useRef(false);
 
+  // History хүсэлт session cookie үүсгэнэ.
+  // Дуусах хүртэл шинэ API үйлдлүүдийг түр хүлээлгэнэ.
+  const disabled = busy || historyLoading;
+
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
-    // Browser storage-ийн түүхийг mount-ийн дараа ачаална.
-    queueMicrotask(() => {
-      if (cancelled) return;
-
+    async function loadHistory() {
       try {
-        const saved: unknown = JSON.parse(
-          localStorage.getItem(storageKey) || "[]",
-        );
+        const raw = await requestJson("/api/buyer/history", {
+          signal: controller.signal,
+        });
 
-        if (Array.isArray(saved)) {
-          setHistory(saved as Receipt[]);
+        const parsed = buyerHistorySchema.safeParse(raw);
+
+        if (!parsed.success) {
+          throw new Error("Захиалгын түүхийн формат буруу байна.");
         }
-      } catch {
-        // History-ийн анхны утга [] тул дахин setState хийхгүй.
-      }
-    });
 
-    return () => {
-      cancelled = true;
-    };
+        if (!controller.signal.aborted) {
+          setHistory(parsed.data.history);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setHistoryError(
+            error instanceof Error
+              ? error.message
+              : "Захиалгын түүхийг уншиж чадсангүй.",
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setHistoryLoading(false);
+        }
+      }
+    }
+
+    void loadHistory();
+
+    return () => controller.abort();
   }, []);
 
   function log(text: string) {
     setEvents((old) => [...old, text]);
   }
 
-  // Loading, алдаа, давхар даралтыг нэг газраас удирдана.
   async function run(work: () => Promise<void>) {
-    if (lock.current) return;
+    if (lock.current || historyLoading) return;
 
     lock.current = true;
     setBusy(true);
@@ -147,14 +204,32 @@ export default function Home() {
     }
   }
 
-  function newRequest() {
-    setStep(1);
-    setReport("");
-    setGoal(initialGoal);
+  function clearRequestResults() {
     setQuotes([]);
     setSelected(null);
     setReceipt(null);
     setApproved(false);
+    setTarget(0);
+  }
+
+  function newRequest() {
+    if (disabled) return;
+
+    setStep(1);
+    setReport("");
+    setGoal({ ...initialGoal });
+    clearRequestResults();
+    setWarnings([]);
+    setEvents([]);
+    setError("");
+    setMessage("");
+  }
+
+  function changeReport(value: string) {
+    setReport(value);
+    setGoal({ ...initialGoal });
+    clearRequestResults();
+    setWarnings([]);
     setEvents([]);
     setError("");
     setMessage("");
@@ -165,13 +240,114 @@ export default function Home() {
       ...old,
       [key]: value,
     }));
+
+    // Нөхцөл өөрчлөгдвөл өмнөх санал хүчингүй.
+    clearRequestResults();
+    setError("");
+    setMessage("");
   }
 
-  async function getQuotes() {
-    const data = await api("quotes", { goal });
+  function enterManually() {
+    if (disabled || !report.trim()) return;
 
-    setQuotes(data.quotes);
+    setGoal({ ...initialGoal });
+    clearRequestResults();
+    setWarnings([]);
+    setError("");
+    setMessage(
+      "Тайлангаа хараад мэдээлэл, төсөв, хугацаагаа гараар бөглөөрэй.",
+    );
+
+    log("Хэрэглэгч хүсэлтээ гараар бөглөхөөр сонгосон.");
+    setStep(2);
+  }
+
+  async function parseReport() {
+    const text = report.trim();
+
+    if (text.length < 10 || text.length > 12000) {
+      throw new Error("Тайлангийн текст 10–12,000 тэмдэгт байна.");
+    }
+
+    setGoal({ ...initialGoal });
+    clearRequestResults();
+    setWarnings([]);
+
+    const raw = await requestJson("/api/buyer/parse-report", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        report: text,
+      }),
+    });
+
+    const parsed = parseResponseSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("AI-ийн мэдээллийн формат буруу байна.");
+    }
+
+    const { result, reportId } = parsed.data;
+
+    setGoal({
+      ...initialGoal,
+      vehicle: result.vehicle,
+      parts: result.parts,
+      tasks: result.tasks,
+    });
+
+    setWarnings(result.warnings);
+    setMessage(
+      "AI-ийн гаргасан мэдээллийг шалгаад төсөв, хугацаагаа оруулаарай.",
+    );
+
+    log(
+      reportId
+        ? "AI тайланг уншсан. Тайлан MongoDB-д хадгалагдсан."
+        : "AI тайлангаас мэдээллийг гаргасан.",
+    );
+
+    setStep(2);
+  }
+
+  const goalValid =
+    Boolean(goal.vehicle.trim()) &&
+    Boolean(goal.parts.trim()) &&
+    Boolean(goal.tasks.trim()) &&
+    Number.isFinite(goal.budget) &&
+    goal.budget > 0 &&
+    Number.isInteger(goal.days) &&
+    goal.days >= 1 &&
+    goal.days <= 30 &&
+    ["Any", "OEM", "Aftermarket", "Used"].includes(goal.preference);
+
+  async function getQuotes() {
+    if (!goalValid) {
+      throw new Error(
+        "Машин, сэлбэг, засварын ажил, төсөв, хугацаагаа бөглөөрэй.",
+      );
+    }
+
+    const raw = await api("quotes", {
+      goal: {
+        ...goal,
+        vehicle: goal.vehicle.trim(),
+        parts: goal.parts.trim(),
+        tasks: goal.tasks.trim(),
+      },
+    });
+
+    const parsed = quotesResponseSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("Merchant саналын формат буруу байна.");
+    }
+
+    setQuotes(parsed.data.quotes);
     setSelected(null);
+    setReceipt(null);
     setApproved(false);
 
     log("Хүсэлт батлагдсан. Demo merchant саналуудыг авсан.");
@@ -181,55 +357,101 @@ export default function Home() {
   async function negotiate() {
     if (!selected) return;
 
-    const data = await api("negotiate", {
-      token: selected.token,
+    const current = selected;
+
+    if (!Number.isFinite(target) || target <= 0 || target >= current.total) {
+      throw new Error("Зорилтот үнэ 0-ээс их, одоогийн үнээс бага байна.");
+    }
+
+    const raw = await api("negotiate", {
+      token: current.token,
       target,
     });
 
-    setSelected(data.quote);
+    const parsed = negotiationResponseSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("Үнэ тохиролцох хариултын формат буруу.");
+    }
+
+    const nextQuote = parsed.data.quote;
+
+    setSelected(nextQuote);
 
     setQuotes((old) =>
-      old.map((quote) => (quote.id === data.quote.id ? data.quote : quote)),
+      old.map((quote) => (quote.id === nextQuote.id ? nextQuote : quote)),
     );
 
     setApproved(false);
-    setMessage(data.message);
+    setMessage(parsed.data.message);
 
     log(
-      `Demo negotiation: ${money(selected.total)} → ${money(data.quote.total)}`,
+      `Demo negotiation: ${money(current.total)} → ${money(nextQuote.total)}`,
     );
   }
 
   async function confirm() {
-    if (!selected) return;
+    if (!selected || !approved) {
+      throw new Error("Эцсийн үнийг зөвшөөрнө үү.");
+    }
 
-    const data = await api("confirm", {
+    const raw = await api("confirm", {
       token: selected.token,
-      approved,
+      approved: true,
       approvedTotal: selected.total,
     });
 
-    setReceipt(data.receipt);
+    const parsed = confirmResponseSchema.safeParse(raw);
 
-    log("Хэрэглэгч зөвшөөрсөн. Demo баримт үүссэн.");
+    if (!parsed.success) {
+      throw new Error("Баримтын формат буруу байна.");
+    }
 
-    setHistory((old) => {
-      const next = [
-        data.receipt,
-        ...old.filter((item) => item.id !== data.receipt.id),
-      ].slice(0, 20);
+    const savedReceipt = parsed.data.receipt;
 
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(next));
-      } catch {
-        // Storage боломжгүй байсан ч баримтыг харуулна.
-      }
+    setReceipt(savedReceipt);
 
-      return next;
-    });
+    setHistory((old) =>
+      [
+        savedReceipt,
+        ...old.filter((item) => item.id !== savedReceipt.id),
+      ].slice(0, 20),
+    );
 
+    log("Хэрэглэгч зөвшөөрсөн. Demo баримт хүлээн авсан.");
     setStep(5);
   }
+
+  async function refreshHistory() {
+    const raw = await requestJson("/api/buyer/history");
+    const parsed = buyerHistorySchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("Захиалгын түүхийн формат буруу.");
+    }
+
+    setHistory(parsed.data.history);
+    setHistoryError("");
+    setMessage("Захиалгын түүх шинэчлэгдлээ.");
+  }
+
+  function selectQuote(quote: Quote) {
+    setSelected(quote);
+    setReceipt(null);
+
+    setTarget(Math.max(1, Math.min(goal.budget, quote.total - 10000)));
+
+    setApproved(false);
+    setMessage("");
+    setError("");
+    setStep(4);
+  }
+
+  const targetValid =
+    selected !== null &&
+    Number.isFinite(target) &&
+    target > 0 &&
+    target < selected.total;
 
   return (
     <div className="shell">
@@ -237,31 +459,47 @@ export default function Home() {
         <Link className="brand" href="/">
           Zah<span>Agent</span>
         </Link>
-        <p>Auto Repair & Parts</p>
 
-        <button onClick={newRequest} disabled={busy}>
+        <p>Auto Repair &amp; Parts</p>
+
+        <button onClick={newRequest} disabled={disabled}>
           ＋ Шинэ хүсэлт
         </button>
 
         <h3>Захиалгын түүх</h3>
 
-        {history.length === 0 && <p>Захиалга байхгүй.</p>}
+        {historyLoading && <p role="status">Түүх ачаалж байна…</p>}
+
+        {historyError && <p role="alert">{historyError}</p>}
+
+        {!historyLoading && !historyError && history.length === 0 && (
+          <p>Захиалга байхгүй.</p>
+        )}
 
         {history.map((item) => (
           <button
             className="history"
             key={item.id}
-            disabled={busy}
+            disabled={disabled}
             onClick={() => {
               setReceipt(item);
               setStep(5);
               setError("");
+              setMessage("");
             }}
           >
             {item.id}
             <small>{money(item.quote.total)} · Demo</small>
           </button>
         ))}
+
+        <button
+          className="history"
+          disabled={disabled}
+          onClick={() => void run(refreshHistory)}
+        >
+          Түүх шинэчлэх
+        </button>
 
         <div className="aside-note">
           Buyer workspace
@@ -281,18 +519,22 @@ export default function Home() {
             </h1>
           </div>
 
-          <span className="badge">DEMO MODE</span>
+          <span className="badge">DEMO COMMERCE</span>
         </header>
 
         <p className="notice">
-          Demo өгөгдөлтэй ажиллана. OyuLLM, A2A, MCP болон бодит төлбөр
-          холбогдоогүй.
+          Тайлангийн текстийг Gemini боловсруулна. Merchant саналууд demo
+          өгөгдөлтэй. Бодит захиалга, booking болон төлбөр холбогдоогүй.
         </p>
 
-        <nav>
+        <nav aria-label="Хүсэлтийн үе шат">
           {["Тайлан", "Хүсэлт", "Саналууд", "Батлах", "Баримт"].map(
             (label, index) => (
-              <span className={step >= index + 1 ? "active" : ""} key={label}>
+              <span
+                className={step >= index + 1 ? "active" : ""}
+                aria-current={step === index + 1 ? "step" : undefined}
+                key={label}
+              >
                 {index + 1}. {label}
               </span>
             ),
@@ -319,34 +561,54 @@ export default function Home() {
             <h2>Даатгалын үнэлгээ / оношилгооны тайлан</h2>
 
             <p>
-              Текстээ оруулаад мэдээллийг гараар батална. Demo жишээ нь Prius
-              30-ийн бампер, зүүн гэрэл.
+              Тайлангийн текстээ оруулах эсвэл TXT файл сонгоорой. AI мэдээллийг
+              гаргасны дараа та шалгаж батална.
             </p>
 
             <textarea
+              aria-label="Тайлангийн текст"
               value={report}
-              onChange={(event) => setReport(event.target.value)}
-              placeholder="Тайлангийн текст…"
+              disabled={disabled}
+              maxLength={12000}
+              onChange={(event) => changeReport(event.target.value)}
+              placeholder="Оношилгооны тайлангийн текст…"
               rows={7}
             />
+
+            <p>{report.length.toLocaleString()} / 12,000 тэмдэгт</p>
 
             <label className="upload">
               TXT файл оруулах
               <input
                 type="file"
                 accept=".txt,text/plain"
-                disabled={busy}
+                disabled={disabled}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
+
+                  // Ижил файлыг дахин сонгох боломжтой.
+                  event.target.value = "";
 
                   if (!file) return;
 
                   void run(async () => {
+                    if (!file.name.toLowerCase().endsWith(".txt")) {
+                      throw new Error("TXT файл сонгоорой.");
+                    }
+
                     if (file.size > 1024 * 1024) {
                       throw new Error("TXT файл 1MB-аас бага байна.");
                     }
 
-                    setReport(await file.text());
+                    const text = await file.text();
+
+                    if (text.trim().length > 12000) {
+                      throw new Error(
+                        "Тайлангийн текст 12,000 тэмдэгтээс бага байна.",
+                      );
+                    }
+
+                    changeReport(text);
                   });
                 }}
               />
@@ -355,25 +617,29 @@ export default function Home() {
             <div className="actions">
               <button
                 className="secondary"
-                onClick={() => {
-                  setReport(sampleReport);
-                  setGoal(initialGoal);
-                }}
+                disabled={disabled}
+                onClick={() => changeReport(sampleReport)}
               >
                 Demo тайлан ашиглах
               </button>
 
               <button
-                disabled={busy || !report.trim()}
-                onClick={() => {
-                  setStep(2);
-
-                  log(
-                    "Тайлангийн текст оруулсан. Мэдээллийг хэрэглэгч батална.",
-                  );
-                }}
+                className="secondary"
+                disabled={disabled || !report.trim()}
+                onClick={enterManually}
               >
-                Мэдээлэл батлах →
+                Гараар бөглөх
+              </button>
+
+              <button
+                disabled={
+                  disabled ||
+                  report.trim().length < 10 ||
+                  report.trim().length > 12000
+                }
+                onClick={() => void run(parseReport)}
+              >
+                AI-аар мэдээлэл гаргах →
               </button>
             </div>
           </section>
@@ -384,7 +650,21 @@ export default function Home() {
           <section>
             <h2>Засварын хүсэлтээ батлаарай</h2>
 
-            <p>Доорх утгууд нь demo жишээ. Таны тайлангаас AI-аар гаргаагүй.</p>
+            <p>
+              Машин, сэлбэг, хийх ажлыг тайлантайгаа тулгаж шалгаарай. Хоосон
+              талбарыг бөглөж, төсөв болон хүссэн хугацаагаа оруулна уу.
+            </p>
+
+            {warnings.length > 0 && (
+              <div className="notice">
+                <strong>Шалгах мэдээлэл</strong>
+                <ul>
+                  {warnings.map((warning, index) => (
+                    <li key={index}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <details>
               <summary>Оруулсан тайлан</summary>
@@ -395,7 +675,9 @@ export default function Home() {
               <label>
                 Машин
                 <input
+                  disabled={disabled}
                   value={goal.vehicle}
+                  placeholder="Жишээ: Toyota Prius 30"
                   onChange={(event) => edit("vehicle", event.target.value)}
                 />
               </label>
@@ -403,9 +685,11 @@ export default function Home() {
               <label>
                 Төсөв (₮)
                 <input
+                  disabled={disabled}
                   type="number"
                   min="1"
-                  value={goal.budget}
+                  value={goal.budget === 0 ? "" : goal.budget}
+                  placeholder="Жишээ: 1500000"
                   onChange={(event) =>
                     edit("budget", Number(event.target.value))
                   }
@@ -415,7 +699,9 @@ export default function Home() {
               <label>
                 Шаардлагатай сэлбэг
                 <input
+                  disabled={disabled}
                   value={goal.parts}
+                  placeholder="Тайланд дурдсан сэлбэгүүд"
                   onChange={(event) => edit("parts", event.target.value)}
                 />
               </label>
@@ -423,10 +709,13 @@ export default function Home() {
               <label>
                 Хэд хоногийн дотор?
                 <input
+                  disabled={disabled}
                   type="number"
                   min="1"
                   max="30"
-                  value={goal.days}
+                  step="1"
+                  value={goal.days === 0 ? "" : goal.days}
+                  placeholder="Жишээ: 3"
                   onChange={(event) => edit("days", Number(event.target.value))}
                 />
               </label>
@@ -434,7 +723,9 @@ export default function Home() {
               <label>
                 Засварын ажил
                 <input
+                  disabled={disabled}
                   value={goal.tasks}
+                  placeholder="Солих, засах, будах зэрэг ажил"
                   onChange={(event) => edit("tasks", event.target.value)}
                 />
               </label>
@@ -442,27 +733,40 @@ export default function Home() {
               <label>
                 Сэлбэгийн сонголт
                 <select
+                  disabled={disabled}
                   value={goal.preference}
                   onChange={(event) => edit("preference", event.target.value)}
                 >
                   <option value="Any">Бүх төрөл</option>
-                  <option>OEM</option>
-                  <option>Aftermarket</option>
-                  <option>Used</option>
+                  <option value="OEM">OEM</option>
+                  <option value="Aftermarket">Aftermarket</option>
+                  <option value="Used">Used</option>
                 </select>
               </label>
             </div>
 
+            <p className="notice">
+              Одоогийн demo merchant зөвхөн Prius 30-ийн урд бампер, зүүн урд
+              гэрэл солих болон бампер будах хүсэлтийг дэмжинэ.
+            </p>
+
             <div className="actions">
               <button
                 className="secondary"
-                disabled={busy}
-                onClick={() => setStep(1)}
+                disabled={disabled}
+                onClick={() => {
+                  setStep(1);
+                  setError("");
+                  setMessage("");
+                }}
               >
                 Буцах
               </button>
 
-              <button disabled={busy} onClick={() => run(getQuotes)}>
+              <button
+                disabled={disabled || !goalValid}
+                onClick={() => void run(getQuotes)}
+              >
                 Батлаад санал авах →
               </button>
             </div>
@@ -497,12 +801,12 @@ export default function Home() {
 
                     <dl>
                       <div>
-                        <dt>Бампер + зүүн гэрэл</dt>
+                        <dt>{quote.goal.parts}</dt>
                         <dd>{money(quote.parts)}</dd>
                       </div>
 
                       <div>
-                        <dt>Солих + будах</dt>
+                        <dt>{quote.goal.tasks}</dt>
                         <dd>{money(quote.labor)}</dd>
                       </div>
 
@@ -538,16 +842,8 @@ export default function Home() {
                     </p>
 
                     <button
-                      disabled={busy}
-                      onClick={() => {
-                        setSelected(quote);
-
-                        setTarget(Math.min(goal.budget, quote.total - 10000));
-
-                        setApproved(false);
-                        setMessage("");
-                        setStep(4);
-                      }}
+                      disabled={disabled}
+                      onClick={() => selectQuote(quote)}
                     >
                       Багц сонгох
                     </button>
@@ -557,8 +853,12 @@ export default function Home() {
 
             <button
               className="secondary"
-              disabled={busy}
-              onClick={() => setStep(2)}
+              disabled={disabled}
+              onClick={() => {
+                setStep(2);
+                setError("");
+                setMessage("");
+              }}
             >
               Нөхцөлөө өөрчлөх
             </button>
@@ -592,6 +892,8 @@ export default function Home() {
             </div>
 
             <p>
+              {selected.goal.vehicle}
+              <br />
               {selected.goal.parts} · {selected.goal.tasks}
             </p>
 
@@ -600,19 +902,42 @@ export default function Home() {
               авна.
             </p>
 
+            <p
+              className={
+                selected.total <= selected.goal.budget &&
+                selected.days <= selected.goal.days
+                  ? "fit"
+                  : "unfit"
+              }
+            >
+              {selected.total <= selected.goal.budget
+                ? "✓ Төсөвт багтана"
+                : `Төсвөөс ${money(
+                    selected.total - selected.goal.budget,
+                  )} илүү`}
+              <br />
+              {selected.days <= selected.goal.days
+                ? "✓ Хугацаанд багтана"
+                : "Хүссэн хугацаанаас хэтэрнэ"}
+            </p>
+
             {selected.revision === 1 && (
               <div className="negotiate">
                 <label>
                   Тохиролцох зорилтот үнэ
                   <input
+                    disabled={disabled}
                     type="number"
                     min="1"
-                    value={target}
+                    value={target === 0 ? "" : target}
                     onChange={(event) => setTarget(Number(event.target.value))}
                   />
                 </label>
 
-                <button disabled={busy} onClick={() => run(negotiate)}>
+                <button
+                  disabled={disabled || !targetValid}
+                  onClick={() => void run(negotiate)}
+                >
                   Үнэ тохиролцох
                 </button>
               </div>
@@ -621,26 +946,33 @@ export default function Home() {
             <label className="approval">
               <input
                 type="checkbox"
+                disabled={disabled}
                 checked={approved}
                 onChange={(event) => setApproved(event.target.checked)}
               />
-              {money(selected.total)} үнэтэй энэ багцын demo захиалга, booking,
-              mock төлбөрийг зөвшөөрч байна.
+              {money(selected.total)} үнэтэй, {selected.days} хоногийн
+              хугацаатай энэ багцын demo захиалга, booking, mock төлбөрийг
+              зөвшөөрч байна.
             </label>
 
             <div className="actions">
               <button
                 className="secondary"
-                disabled={busy}
+                disabled={disabled}
                 onClick={() => {
                   setStep(3);
+                  setApproved(false);
                   setMessage("");
+                  setError("");
                 }}
               >
                 Буцах
               </button>
 
-              <button disabled={busy || !approved} onClick={() => run(confirm)}>
+              <button
+                disabled={disabled || !approved}
+                onClick={() => void run(confirm)}
+              >
                 Confirm — Demo захиалах
               </button>
             </div>
@@ -659,6 +991,26 @@ export default function Home() {
             <strong className="price">{money(receipt.quote.total)}</strong>
 
             <dl>
+              <div>
+                <dt>Баримтын дугаар</dt>
+                <dd>{receipt.id}</dd>
+              </div>
+
+              <div>
+                <dt>Машин</dt>
+                <dd>{receipt.quote.goal.vehicle}</dd>
+              </div>
+
+              <div>
+                <dt>Сэлбэг</dt>
+                <dd>{receipt.quote.goal.parts}</dd>
+              </div>
+
+              <div>
+                <dt>Засварын ажил</dt>
+                <dd>{receipt.quote.goal.tasks}</dd>
+              </div>
+
               <div>
                 <dt>Сэлбэгийн дэлгүүр</dt>
                 <dd>{receipt.quote.partsMerchant}</dd>
@@ -688,9 +1040,16 @@ export default function Home() {
                 <dt>Засварын хугацаа</dt>
                 <dd>{receipt.quote.days} хоног</dd>
               </div>
+
+              <div>
+                <dt>Баталгаа</dt>
+                <dd>{receipt.quote.warranty}</dd>
+              </div>
             </dl>
 
-            <button onClick={newRequest}>Шинэ хүсэлт үүсгэх</button>
+            <button disabled={disabled} onClick={newRequest}>
+              Шинэ хүсэлт үүсгэх
+            </button>
           </section>
         )}
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-
+import { saveBuyerReceipt } from "@/lib/buyer-store";
 export const runtime = "nodejs";
 
 const secret = process.env.DEMO_SIGNING_SECRET;
@@ -198,25 +198,42 @@ export async function POST(request: Request) {
         throw new Error("Эцсийн үнэ дээр зөвшөөрөл шаардлагатай.");
       }
 
-      // Ижил саналыг давхар батлахад ижил дугаар гарна.
-      // Энд бодит inventory, booking, payment өөрчлөхгүй.
       const id = createHmac("sha256", secret!)
         .update(body.token)
         .digest("hex")
         .slice(0, 12)
         .toUpperCase();
 
-      return NextResponse.json({
-        receipt: {
-          id,
-          orderId: `ORD-${id}`,
-          bookingId: `BOOK-${id}`,
-          paymentId: `MOCK-${id}`,
-          quote,
-          mode: "demo",
-          status: "demo_completed",
-        },
-      });
+      const receipt = {
+        id,
+        orderId: `ORD-${id}`,
+        bookingId: `BOOK-${id}`,
+        paymentId: `MOCK-${id}`,
+        quote,
+        mode: "demo",
+        status: "demo_completed",
+      };
+
+      try {
+        const savedReceipt = await saveBuyerReceipt(receipt);
+
+        return NextResponse.json(
+          { receipt: savedReceipt },
+          {
+            headers: {
+              "Cache-Control": "no-store",
+            },
+          },
+        );
+      } catch {
+        return NextResponse.json(
+          {
+            error:
+              "Баримтыг MongoDB-д хадгалж чадсангүй. Холболтоо шалгаад Confirm-ийг дахин оролдоорой.",
+          },
+          { status: 503 },
+        );
+      }
     }
 
     throw new Error("Үйлдэл олдсонгүй.");
