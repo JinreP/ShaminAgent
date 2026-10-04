@@ -2,6 +2,12 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+Merchant administration is available at `/merchant`. Follow
+[Phase 2 setup](docs/merchant-phase2.md) to configure a development MongoDB
+replica set, enable local-only demo access and seed the five simulated merchants.
+The existing Buyer demo is unchanged. Shared Buyer integration contracts are
+documented in [merchant-shared-contracts.md](docs/merchant-shared-contracts.md).
+
 First, run the development server:
 
 ```bash
