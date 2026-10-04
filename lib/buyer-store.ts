@@ -501,3 +501,60 @@ export async function getBuyerHistory() {
 
   return history;
 }
+export async function listBuyerRequests() {
+  const { ownerId, requests } = await context();
+
+  const documents = await requests
+    .find(
+      { ownerId },
+      {
+        projection: {
+          _id: 1,
+          status: 1,
+          "goal.vehicle": 1,
+          "goal.budget": 1,
+          "extracted.vehicle": 1,
+          updatedAt: 1,
+        },
+      },
+    )
+    .sort({ updatedAt: -1 })
+    .limit(50)
+    .toArray();
+
+  return documents.map((document) => ({
+    id: document._id,
+    status: document.status,
+    vehicle:
+      document.goal?.vehicle ||
+      document.extracted?.vehicle ||
+      "Машин тодорхойгүй",
+    budget: document.goal?.budget ?? 0,
+    updatedAt: document.updatedAt.toISOString(),
+  }));
+}
+
+export async function readBuyerRequest(requestId: string) {
+  const { ownerId, requests } = await context();
+
+  const document = await requests.findOne({
+    _id: requestId,
+    ownerId,
+  });
+
+  if (!document) {
+    throw new BuyerWorkflowError("Хүсэлт олдсонгүй.");
+  }
+
+  return {
+    id: document._id,
+    status: document.status,
+    report: document.report,
+    extracted: document.extracted,
+    goal: document.goal,
+    quotes: document.quotes,
+    selectedQuote: document.selectedQuote,
+    receipt: document.receipt,
+    updatedAt: document.updatedAt.toISOString(),
+  };
+}

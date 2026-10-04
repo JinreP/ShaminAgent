@@ -10,15 +10,16 @@ import {
   buyerQuoteSchema,
   buyerReceiptSchema,
   buyerHistorySchema,
+  savedRequestsResponseSchema,
+  savedRequestResponseSchema,
   type BuyerReceipt,
+  type SavedRequestSummary,
 } from "@/lib/buyer-types";
 
 type Goal = z.infer<typeof buyerGoalSchema>;
 
-// Санал дээр token заавал байна.
-// Хадгалсан receipt дээр token шаардлагагүй.
 const quoteSchema = buyerQuoteSchema.extend({
-  token: z.string().min(1),
+  token: z.string().uuid(),
 });
 
 const quotesResponseSchema = z.object({
@@ -64,6 +65,12 @@ const initialGoal: Goal = {
   days: 0,
   preference: "Any",
 };
+
+const requestStatusLabels = {
+  draft: "Мэдээлэл батлах",
+  quoted: "Санал авсан",
+  completed: "Дууссан",
+} as const;
 
 function money(value: number) {
   return new Intl.NumberFormat("mn-MN").format(value) + "₮";
@@ -118,20 +125,32 @@ function api(action: string, payload: Record<string, unknown>) {
     }),
   });
 }
+function readCurrentTime(): number {
+  return Date.now();
+}
 
 export default function Home() {
   const [report, setReport] = useState("");
   const [goal, setGoal] = useState<Goal>({ ...initialGoal });
   const [step, setStep] = useState(1);
   const [requestId, setRequestId] = useState<string | null>(null);
+
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selected, setSelected] = useState<Quote | null>(null);
+  const [expiredTokens, setExpiredTokens] = useState<string[]>([]);
 
   const [target, setTarget] = useState(0);
   const [approved, setApproved] = useState(false);
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [history, setHistory] = useState<Receipt[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+
+  const [savedRequests, setSavedRequests] = useState<SavedRequestSummary[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(true);
+  const [requestsError, setRequestsError] = useState("");
+
   const [events, setEvents] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
 
@@ -139,19 +158,15 @@ export default function Home() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState("");
-
   const lock = useRef(false);
-
-  // History хүсэлт session cookie үүсгэнэ.
-  // Дуусах хүртэл шинэ API үйлдлүүдийг түр хүлээлгэнэ.
-  const disabled = busy || historyLoading;
+  const disabled = busy || historyLoading || requestsLoading;
 
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadHistory() {
+    async function loadWorkspace() {
+      // Session cookie үүсгэх эхний хүсэлтийн дараа
+      // хадгалсан хүсэлтүүдийг дарааллаар уншина.
       try {
         const raw = await requestJson("/api/buyer/history", {
           signal: controller.signal,
@@ -160,7 +175,7 @@ export default function Home() {
         const parsed = buyerHistorySchema.safeParse(raw);
 
         if (!parsed.success) {
-          throw new Error("Захиалгын түүхийн формат буруу байна.");
+          throw new Error("Захиалгын түүхийн формат буруу.");
         }
 
         if (!controller.signal.aborted) {
@@ -174,24 +189,95 @@ export default function Home() {
               : "Захиалгын түүхийг уншиж чадсангүй.",
           );
         }
+      }
+
+      if (controller.signal.aborted) return;
+
+      try {
+        const raw = await requestJson("/api/buyer/requests", {
+          signal: controller.signal,
+        });
+
+        const parsed = savedRequestsResponseSchema.safeParse(raw);
+
+        if (!parsed.success) {
+          throw new Error("Хүсэлтүүдийн жагсаалтын формат буруу.");
+        }
+
+        if (!controller.signal.aborted) {
+          setSavedRequests(parsed.data.requests);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setRequestsError(
+            error instanceof Error
+              ? error.message
+              : "Хүсэлтүүдийг уншиж чадсангүй.",
+          );
+        }
       } finally {
         if (!controller.signal.aborted) {
           setHistoryLoading(false);
+          setRequestsLoading(false);
         }
       }
     }
 
-    void loadHistory();
+    void loadWorkspace();
 
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const active = quotes.filter(
+      (quote) => !expiredTokens.includes(quote.token),
+    );
+
+    if (active.length === 0) return;
+
+    const nextExpiry = Math.min(...active.map((quote) => quote.expiresAt));
+
+    const timer = window.setTimeout(
+      () => {
+        const now = readCurrentTime();
+        setExpiredTokens(
+          quotes
+            .filter((quote) => quote.expiresAt <= now)
+            .map((quote) => quote.token),
+        );
+      },
+      Math.min(Math.max(0, nextExpiry - readCurrentTime()), 2_147_483_647),
+    );
+
+    return () => window.clearTimeout(timer);
+  }, [quotes, expiredTokens]);
 
   function log(text: string) {
     setEvents((old) => [...old, text]);
   }
 
-  async function run(work: () => Promise<void>) {
-    if (lock.current || historyLoading) return;
+  async function refreshRequestList() {
+    try {
+      const raw = await requestJson("/api/buyer/requests");
+      const parsed = savedRequestsResponseSchema.safeParse(raw);
+
+      if (!parsed.success) {
+        throw new Error("Хүсэлтүүдийн жагсаалтын формат буруу.");
+      }
+
+      setSavedRequests(parsed.data.requests);
+      setRequestsError("");
+    } catch (error) {
+      setRequestsError(
+        error instanceof Error
+          ? error.message
+          : "Хүсэлтүүдийг шинэчилж чадсангүй.",
+      );
+    }
+  }
+
+  async function run(work: () => Promise<void>, refreshRequests = false) {
+    if (lock.current || historyLoading || requestsLoading) return;
 
     lock.current = true;
     setBusy(true);
@@ -203,6 +289,10 @@ export default function Home() {
     } catch (error) {
       setError(error instanceof Error ? error.message : "Алдаа гарлаа.");
     } finally {
+      if (refreshRequests) {
+        await refreshRequestList();
+      }
+
       lock.current = false;
       setBusy(false);
     }
@@ -211,6 +301,7 @@ export default function Home() {
   function clearRequestResults() {
     setQuotes([]);
     setSelected(null);
+    setExpiredTokens([]);
     setReceipt(null);
     setApproved(false);
     setTarget(0);
@@ -218,6 +309,7 @@ export default function Home() {
 
   function newRequest() {
     if (disabled) return;
+
     setRequestId(null);
     setStep(1);
     setReport("");
@@ -231,10 +323,10 @@ export default function Home() {
 
   function changeReport(value: string) {
     setReport(value);
+    setRequestId(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
     setWarnings([]);
-    setRequestId(null);
     setEvents([]);
     setError("");
     setMessage("");
@@ -246,15 +338,16 @@ export default function Home() {
       [key]: value,
     }));
 
-    // Нөхцөл өөрчлөгдвөл өмнөх санал хүчингүй.
     clearRequestResults();
     setError("");
     setMessage("");
   }
 
   async function enterManually() {
-    if (!report.trim()) {
-      throw new Error("Тайлангийн текстээ оруулаарай.");
+    const text = report.trim();
+
+    if (!text || text.length > 12000) {
+      throw new Error("Тайлангийн текст 1–12,000 тэмдэгт байна.");
     }
 
     setRequestId(null);
@@ -263,7 +356,7 @@ export default function Home() {
     setWarnings([]);
 
     const raw = await api("draft", {
-      report: report.trim(),
+      report: text,
     });
 
     const parsed = draftResponseSchema.safeParse(raw);
@@ -273,7 +366,6 @@ export default function Home() {
     }
 
     setRequestId(parsed.data.requestId);
-
     setMessage(
       "Тайлангаа хараад мэдээлэл, төсөв, хугацаагаа гараар бөглөөрэй.",
     );
@@ -288,6 +380,7 @@ export default function Home() {
     if (text.length < 10 || text.length > 12000) {
       throw new Error("Тайлангийн текст 10–12,000 тэмдэгт байна.");
     }
+
     setRequestId(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
@@ -318,15 +411,13 @@ export default function Home() {
       parts: result.parts,
       tasks: result.tasks,
     });
-
     setWarnings(result.warnings);
+
     setMessage(
       "AI-ийн гаргасан мэдээллийг шалгаад төсөв, хугацаагаа оруулаарай.",
     );
 
     log(`AI тайлан хадгалагдсан. Хүсэлт: ${savedRequestId}`);
-    setStep(2);
-
     setStep(2);
   }
 
@@ -347,11 +438,13 @@ export default function Home() {
         "Машин, сэлбэг, засварын ажил, төсөв, хугацаагаа бөглөөрэй.",
       );
     }
+
     if (!requestId) {
       throw new Error(
         "Хүсэлт үүсээгүй байна. Тайлангаа дахин боловсруулаарай.",
       );
     }
+
     const raw = await api("quotes", {
       requestId,
       goal: {
@@ -361,27 +454,84 @@ export default function Home() {
         tasks: goal.tasks.trim(),
       },
     });
+
     const parsed = quotesResponseSchema.safeParse(raw);
 
     if (!parsed.success) {
       throw new Error("Merchant саналын формат буруу байна.");
     }
 
+    setExpiredTokens([]);
     setQuotes(parsed.data.quotes);
     setSelected(null);
     setReceipt(null);
     setApproved(false);
+    setTarget(0);
 
     log("Хүсэлт батлагдсан. Demo merchant саналуудыг авсан.");
     setStep(3);
   }
 
+  async function reloadRequestQuotes() {
+    await getQuotes();
+    setMessage("Шинэ саналуудыг авлаа.");
+  }
+  function assertActiveQuote(quote: Quote) {
+    if (quote.expiresAt <= readCurrentTime()) {
+      setExpiredTokens((old) => [...new Set([...old, quote.token])]);
+      setApproved(false);
+
+      throw new Error("Саналын хугацаа дууссан. Дахин санал аваарай.");
+    }
+  }
+
+  function selectQuote(quote: Quote) {
+    if (disabled) return;
+
+    try {
+      assertActiveQuote(quote);
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Саналыг сонгож чадсангүй.",
+      );
+      return;
+    }
+
+    setSelected(quote);
+    setReceipt(null);
+    setTarget(Math.max(1, Math.min(goal.budget, quote.total - 10000)));
+    setApproved(false);
+    setMessage("");
+    setError("");
+    setStep(4);
+  }
+
+  const selectedExpired =
+    selected !== null && expiredTokens.includes(selected.token);
+
+  const targetValid =
+    selected !== null &&
+    !selectedExpired &&
+    Number.isFinite(target) &&
+    target > 0 &&
+    target < selected.total;
+
   async function negotiate() {
-    if (!selected) return;
+    if (!selected) {
+      throw new Error("Багцаа сонгоорой.");
+    }
+
     if (!requestId) {
       throw new Error("Хүсэлтийн дугаар олдсонгүй.");
     }
+
     const current = selected;
+
+    assertActiveQuote(current);
+
+    if (current.revision !== 1) {
+      throw new Error("Demo дээр нэг удаа үнэ тохиролцоно.");
+    }
 
     if (!Number.isFinite(target) || target <= 0 || target >= current.total) {
       throw new Error("Зорилтот үнэ 0-ээс их, одоогийн үнээс бага байна.");
@@ -402,11 +552,9 @@ export default function Home() {
     const nextQuote = parsed.data.quote;
 
     setSelected(nextQuote);
-
     setQuotes((old) =>
       old.map((quote) => (quote.id === nextQuote.id ? nextQuote : quote)),
     );
-
     setApproved(false);
     setMessage(parsed.data.message);
 
@@ -419,9 +567,12 @@ export default function Home() {
     if (!selected || !approved) {
       throw new Error("Эцсийн үнийг зөвшөөрнө үү.");
     }
+
     if (!requestId) {
       throw new Error("Хүсэлтийн дугаар олдсонгүй.");
     }
+
+    assertActiveQuote(selected);
 
     const raw = await api("confirm", {
       requestId,
@@ -429,6 +580,7 @@ export default function Home() {
       approved: true,
       approvedTotal: selected.total,
     });
+
     const parsed = confirmResponseSchema.safeParse(raw);
 
     if (!parsed.success) {
@@ -438,7 +590,6 @@ export default function Home() {
     const savedReceipt = parsed.data.receipt;
 
     setReceipt(savedReceipt);
-
     setHistory((old) =>
       [
         savedReceipt,
@@ -463,23 +614,115 @@ export default function Home() {
     setMessage("Захиалгын түүх шинэчлэгдлээ.");
   }
 
-  function selectQuote(quote: Quote) {
-    setSelected(quote);
-    setReceipt(null);
+  function openReceipt(item: Receipt) {
+    if (disabled) return;
 
-    setTarget(Math.max(1, Math.min(goal.budget, quote.total - 10000)));
+    const matchingRequest = savedRequests.find(
+      (request) => request.id.toUpperCase() === item.id.toUpperCase(),
+    );
 
-    setApproved(false);
-    setMessage("");
+    clearRequestResults();
+    setRequestId(matchingRequest?.id ?? null);
+    setGoal({ ...item.quote.goal });
+    setReport("");
+    setWarnings([]);
+    setEvents([]);
+    setReceipt(item);
     setError("");
-    setStep(4);
+    setMessage("");
+    setStep(5);
   }
 
-  const targetValid =
-    selected !== null &&
-    Number.isFinite(target) &&
-    target > 0 &&
-    target < selected.total;
+  async function resumeRequest(id: string) {
+    const raw = await requestJson(
+      `/api/buyer/requests?id=${encodeURIComponent(id)}`,
+    );
+
+    const parsed = savedRequestResponseSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("Хадгалсан хүсэлтийн формат буруу.");
+    }
+
+    const saved = parsed.data.request;
+
+    if (saved.status === "completed" && !saved.receipt) {
+      throw new Error("Дууссан хүсэлтийн баримт олдсонгүй.");
+    }
+
+    const restoredGoal: Goal = saved.goal
+      ? { ...saved.goal }
+      : {
+          ...initialGoal,
+          vehicle: saved.extracted?.vehicle ?? "",
+          parts: saved.extracted?.parts ?? "",
+          tasks: saved.extracted?.tasks ?? "",
+        };
+
+    const now = readCurrentTime();
+
+    const expired = saved.quotes
+      .filter((quote) => quote.expiresAt <= now)
+      .map((quote) => quote.token);
+
+    setRequestId(saved.id);
+    setReport(saved.report);
+    setGoal(restoredGoal);
+    setQuotes(saved.quotes);
+    setSelected(null);
+    setReceipt(null);
+    setApproved(false);
+    setTarget(0);
+    setWarnings(saved.extracted?.warnings ?? []);
+    setExpiredTokens(expired);
+    setEvents([]);
+    setError("");
+
+    if (saved.status === "completed" && saved.receipt) {
+      setReceipt(saved.receipt);
+      setStep(5);
+      setMessage("Хадгалсан баримтыг нээлээ.");
+    } else if (saved.status === "quoted") {
+      const selectedQuote = saved.selectedQuote;
+
+      if (
+        selectedQuote &&
+        selectedQuote.expiresAt > now &&
+        saved.quotes.some((quote) => quote.token === selectedQuote.token)
+      ) {
+        setSelected(selectedQuote);
+        setTarget(
+          Math.max(
+            1,
+            Math.min(restoredGoal.budget, selectedQuote.total - 10000),
+          ),
+        );
+        setStep(4);
+        setMessage(
+          "Хадгалсан багцыг нээлээ. Эцсийн нөхцөлийг шалгаж дахин зөвшөөрөөрэй.",
+        );
+      } else {
+        setStep(3);
+
+        const hasActiveQuote = saved.quotes.some(
+          (quote) => quote.expiresAt > now,
+        );
+
+        setMessage(
+          hasActiveQuote
+            ? "Хадгалсан саналуудыг нээлээ."
+            : "Саналуудын хугацаа дууссан. Дахин санал аваарай.",
+        );
+      }
+    } else {
+      setStep(2);
+      setMessage(
+        "Хадгалсан тайланг нээлээ. Мэдээлэл, төсөв, хугацаагаа батлаарай.",
+      );
+    }
+
+    log("Хадгалсан хүсэлтийг нээсэн.");
+  }
 
   return (
     <div className="shell">
@@ -488,10 +731,45 @@ export default function Home() {
           Zah<span>Agent</span>
         </Link>
 
-        <p>Auto Repair &amp; Parts</p>
+        <p>Auto Repair & Parts</p>
 
         <button onClick={newRequest} disabled={disabled}>
           ＋ Шинэ хүсэлт
+        </button>
+
+        <h3>Хадгалсан хүсэлтүүд</h3>
+
+        {requestsLoading && <p role="status">Хүсэлтүүд ачаалж байна…</p>}
+
+        {requestsError && <p role="alert">{requestsError}</p>}
+
+        {!requestsLoading && !requestsError && savedRequests.length === 0 && (
+          <p>Хадгалсан хүсэлт байхгүй.</p>
+        )}
+
+        {savedRequests.map((item) => (
+          <button
+            className="history"
+            key={item.id}
+            disabled={disabled}
+            aria-pressed={requestId === item.id}
+            onClick={() => void run(() => resumeRequest(item.id))}
+          >
+            {item.vehicle}
+            <small>
+              {requestStatusLabels[item.status]}
+              {item.budget > 0 ? ` · ${money(item.budget)}` : ""}
+            </small>
+            <small>{item.id.slice(0, 8)}</small>
+          </button>
+        ))}
+
+        <button
+          className="history"
+          disabled={disabled}
+          onClick={() => void run(refreshRequestList)}
+        >
+          Хүсэлтүүд шинэчлэх
         </button>
 
         <h3>Захиалгын түүх</h3>
@@ -509,12 +787,7 @@ export default function Home() {
             className="history"
             key={item.id}
             disabled={disabled}
-            onClick={() => {
-              setReceipt(item);
-              setStep(5);
-              setError("");
-              setMessage("");
-            }}
+            onClick={() => openReceipt(item)}
           >
             {item.id}
             <small>{money(item.quote.total)} · Demo</small>
@@ -546,13 +819,14 @@ export default function Home() {
               нэг хүсэлтээр зохицуул.
             </h1>
           </div>
-
           <span className="badge">DEMO COMMERCE</span>
         </header>
+
         <p className="notice">
           Тайлангийн текстийг Gemini боловсруулна. Merchant саналууд demo
           өгөгдөлтэй. Бодит захиалга, booking болон төлбөр холбогдоогүй.
         </p>
+
         {requestId && (
           <p>
             Хүсэлтийн дугаар: <strong>{requestId}</strong>
@@ -572,18 +846,21 @@ export default function Home() {
             ),
           )}
         </nav>
+
         {error && (
           <div className="error" role="alert">
             {error}
           </div>
         )}
+
         {message && (
           <div className="success" role="status">
             {message}
           </div>
         )}
+
         {busy && <p role="status">Хүсэлт боловсруулж байна…</p>}
-        {/* 1. Тайлан */}
+
         {step === 1 && (
           <section>
             <h2>Даатгалын үнэлгээ / оношилгооны тайлан</h2>
@@ -613,8 +890,6 @@ export default function Home() {
                 disabled={disabled}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-
-                  // Ижил файлыг дахин сонгох боломжтой.
                   event.target.value = "";
 
                   if (!file) return;
@@ -630,9 +905,9 @@ export default function Home() {
 
                     const text = await file.text();
 
-                    if (text.trim().length > 12000) {
+                    if (text.length > 12000) {
                       throw new Error(
-                        "Тайлангийн текст 12,000 тэмдэгтээс бага байна.",
+                        "Тайлангийн текст 12,000 тэмдэгтээс ихгүй байна.",
                       );
                     }
 
@@ -654,7 +929,7 @@ export default function Home() {
               <button
                 className="secondary"
                 disabled={disabled || !report.trim()}
-                onClick={() => void run(enterManually)}
+                onClick={() => void run(enterManually, true)}
               >
                 Гараар бөглөх
               </button>
@@ -665,14 +940,14 @@ export default function Home() {
                   report.trim().length < 10 ||
                   report.trim().length > 12000
                 }
-                onClick={() => void run(parseReport)}
+                onClick={() => void run(parseReport, true)}
               >
                 AI-аар мэдээлэл гаргах →
               </button>
             </div>
           </section>
         )}
-        {/* 2. Засварын хүсэлт */}
+
         {step === 2 && (
           <section>
             <h2>Засварын хүсэлтээ батлаарай</h2>
@@ -704,6 +979,7 @@ export default function Home() {
                 <input
                   disabled={disabled}
                   value={goal.vehicle}
+                  maxLength={200}
                   placeholder="Жишээ: Toyota Prius 30"
                   onChange={(event) => edit("vehicle", event.target.value)}
                 />
@@ -728,6 +1004,7 @@ export default function Home() {
                 <input
                   disabled={disabled}
                   value={goal.parts}
+                  maxLength={2000}
                   placeholder="Тайланд дурдсан сэлбэгүүд"
                   onChange={(event) => edit("parts", event.target.value)}
                 />
@@ -752,6 +1029,7 @@ export default function Home() {
                 <input
                   disabled={disabled}
                   value={goal.tasks}
+                  maxLength={2000}
                   placeholder="Солих, засах, будах зэрэг ажил"
                   onChange={(event) => edit("tasks", event.target.value)}
                 />
@@ -791,15 +1069,15 @@ export default function Home() {
               </button>
 
               <button
-                disabled={disabled || !goalValid}
-                onClick={() => void run(getQuotes)}
+                disabled={disabled || !goalValid || !requestId}
+                onClick={() => void run(getQuotes, true)}
               >
                 Батлаад санал авах →
               </button>
             </div>
           </section>
         )}
-        {/* 3. Санал харьцуулах */}
+
         {step === 3 && (
           <>
             <div className="section-heading">
@@ -830,17 +1108,14 @@ export default function Home() {
                         <dt>{quote.goal.parts}</dt>
                         <dd>{money(quote.parts)}</dd>
                       </div>
-
                       <div>
                         <dt>{quote.goal.tasks}</dt>
                         <dd>{money(quote.labor)}</dd>
                       </div>
-
                       <div>
                         <dt>Хугацаа</dt>
                         <dd>{quote.days} хоног</dd>
                       </div>
-
                       <div>
                         <dt>Баталгаа</dt>
                         <dd>{quote.warranty}</dd>
@@ -859,16 +1134,20 @@ export default function Home() {
                       {quote.total <= goal.budget
                         ? "✓ Төсөвт багтана"
                         : `Төсвөөс ${money(quote.total - goal.budget)} илүү`}
-
                       <br />
-
                       {quote.days <= goal.days
                         ? "✓ Хугацаанд багтана"
                         : "Хугацаанаас хэтэрнэ"}
                     </p>
 
+                    {expiredTokens.includes(quote.token) && (
+                      <p className="unfit">
+                        Саналын хугацаа дууссан. Дахин санал аваарай.
+                      </p>
+                    )}
+
                     <button
-                      disabled={disabled}
+                      disabled={disabled || expiredTokens.includes(quote.token)}
                       onClick={() => selectQuote(quote)}
                     >
                       Багц сонгох
@@ -877,20 +1156,30 @@ export default function Home() {
                 ))}
             </div>
 
-            <button
-              className="secondary"
-              disabled={disabled}
-              onClick={() => {
-                setStep(2);
-                setError("");
-                setMessage("");
-              }}
-            >
-              Нөхцөлөө өөрчлөх
-            </button>
+            <div className="actions">
+              <button
+                className="secondary"
+                disabled={disabled}
+                onClick={() => {
+                  setStep(2);
+                  setApproved(false);
+                  setError("");
+                  setMessage("");
+                }}
+              >
+                Нөхцөлөө өөрчлөх
+              </button>
+
+              <button
+                disabled={disabled || !goalValid || !requestId}
+                onClick={() => void run(reloadRequestQuotes, true)}
+              >
+                Дахин санал авах
+              </button>
+            </div>
           </>
         )}
-        {/* 4. Үнэ тохирох, батлах */}
+
         {step === 4 && selected && (
           <section>
             <h2>Сонгосон багц</h2>
@@ -904,12 +1193,10 @@ export default function Home() {
                 <small>Нийт үнэ</small>
                 <strong>{money(selected.total)}</strong>
               </div>
-
               <div>
                 <small>Хугацаа</small>
                 <strong>{selected.days} хоног</strong>
               </div>
-
               <div>
                 <small>Сэлбэг</small>
                 <strong>{selected.kind}</strong>
@@ -946,12 +1233,26 @@ export default function Home() {
                 : "Хүссэн хугацаанаас хэтэрнэ"}
             </p>
 
+            {selectedExpired && (
+              <p className="unfit">
+                Саналын хугацаа дууссан. Дахин санал аваарай.
+              </p>
+            )}
+
+            <button
+              className="secondary"
+              disabled={disabled || !goalValid || !requestId}
+              onClick={() => void run(reloadRequestQuotes, true)}
+            >
+              Дахин санал авах
+            </button>
+
             {selected.revision === 1 && (
               <div className="negotiate">
                 <label>
                   Тохиролцох зорилтот үнэ
                   <input
-                    disabled={disabled}
+                    disabled={disabled || selectedExpired}
                     type="number"
                     min="1"
                     value={target === 0 ? "" : target}
@@ -961,7 +1262,7 @@ export default function Home() {
 
                 <button
                   disabled={disabled || !targetValid}
-                  onClick={() => void run(negotiate)}
+                  onClick={() => void run(negotiate, true)}
                 >
                   Үнэ тохиролцох
                 </button>
@@ -971,8 +1272,8 @@ export default function Home() {
             <label className="approval">
               <input
                 type="checkbox"
-                disabled={disabled}
-                checked={approved}
+                disabled={disabled || selectedExpired}
+                checked={approved && !selectedExpired}
                 onChange={(event) => setApproved(event.target.checked)}
               />
               {money(selected.total)} үнэтэй, {selected.days} хоногийн
@@ -995,21 +1296,19 @@ export default function Home() {
               </button>
 
               <button
-                disabled={disabled || !approved}
-                onClick={() => void run(confirm)}
+                disabled={disabled || !approved || selectedExpired}
+                onClick={() => void run(confirm, true)}
               >
                 Confirm — Demo захиалах
               </button>
             </div>
           </section>
         )}
-        {/* 5. Баримт */}
+
         {step === 5 && receipt && (
           <section>
             <span className="tag green">DEMO COMPLETED</span>
-
             <h2>Туршилтын баримт бэлэн боллоо</h2>
-
             <p>Энэ нь бодит резерв, booking эсвэл төлбөр биш.</p>
 
             <strong className="price">{money(receipt.quote.total)}</strong>
@@ -1019,52 +1318,42 @@ export default function Home() {
                 <dt>Баримтын дугаар</dt>
                 <dd>{receipt.id}</dd>
               </div>
-
               <div>
                 <dt>Машин</dt>
                 <dd>{receipt.quote.goal.vehicle}</dd>
               </div>
-
               <div>
                 <dt>Сэлбэг</dt>
                 <dd>{receipt.quote.goal.parts}</dd>
               </div>
-
               <div>
                 <dt>Засварын ажил</dt>
                 <dd>{receipt.quote.goal.tasks}</dd>
               </div>
-
               <div>
                 <dt>Сэлбэгийн дэлгүүр</dt>
                 <dd>{receipt.quote.partsMerchant}</dd>
               </div>
-
               <div>
                 <dt>Засварын газар</dt>
                 <dd>{receipt.quote.repairMerchant}</dd>
               </div>
-
               <div>
                 <dt>Захиалга</dt>
                 <dd>{receipt.orderId}</dd>
               </div>
-
               <div>
                 <dt>Booking</dt>
                 <dd>{receipt.bookingId}</dd>
               </div>
-
               <div>
                 <dt>Mock payment</dt>
                 <dd>{receipt.paymentId}</dd>
               </div>
-
               <div>
-                <dt>Засварын хугацаа</dt>
+                <dt>Хугацаа</dt>
                 <dd>{receipt.quote.days} хоног</dd>
               </div>
-
               <div>
                 <dt>Баталгаа</dt>
                 <dd>{receipt.quote.warranty}</dd>
@@ -1076,10 +1365,10 @@ export default function Home() {
             </button>
           </section>
         )}
+
         {events.length > 0 && (
           <section className="timeline">
             <h3>Үйлдлийн явц</h3>
-
             <ol>
               {events.map((event, index) => (
                 <li key={index}>{event}</li>
