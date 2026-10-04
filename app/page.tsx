@@ -36,7 +36,11 @@ const confirmResponseSchema = z.object({
 
 const parseResponseSchema = z.object({
   result: repairReportSchema,
-  reportId: z.string().optional(),
+  requestId: z.string().uuid(),
+});
+
+const draftResponseSchema = z.object({
+  requestId: z.string().uuid(),
 });
 
 type Quote = z.infer<typeof quoteSchema>;
@@ -119,7 +123,7 @@ export default function Home() {
   const [report, setReport] = useState("");
   const [goal, setGoal] = useState<Goal>({ ...initialGoal });
   const [step, setStep] = useState(1);
-
+  const [requestId, setRequestId] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selected, setSelected] = useState<Quote | null>(null);
 
@@ -214,7 +218,7 @@ export default function Home() {
 
   function newRequest() {
     if (disabled) return;
-
+    setRequestId(null);
     setStep(1);
     setReport("");
     setGoal({ ...initialGoal });
@@ -230,6 +234,7 @@ export default function Home() {
     setGoal({ ...initialGoal });
     clearRequestResults();
     setWarnings([]);
+    setRequestId(null);
     setEvents([]);
     setError("");
     setMessage("");
@@ -247,18 +252,33 @@ export default function Home() {
     setMessage("");
   }
 
-  function enterManually() {
-    if (disabled || !report.trim()) return;
+  async function enterManually() {
+    if (!report.trim()) {
+      throw new Error("Тайлангийн текстээ оруулаарай.");
+    }
 
+    setRequestId(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
     setWarnings([]);
-    setError("");
+
+    const raw = await api("draft", {
+      report: report.trim(),
+    });
+
+    const parsed = draftResponseSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      throw new Error("Хүсэлт үүсгэх хариултын формат буруу.");
+    }
+
+    setRequestId(parsed.data.requestId);
+
     setMessage(
       "Тайлангаа хараад мэдээлэл, төсөв, хугацаагаа гараар бөглөөрэй.",
     );
 
-    log("Хэрэглэгч хүсэлтээ гараар бөглөхөөр сонгосон.");
+    log(`Гараар бөглөх хүсэлт үүссэн: ${parsed.data.requestId}`);
     setStep(2);
   }
 
@@ -268,7 +288,7 @@ export default function Home() {
     if (text.length < 10 || text.length > 12000) {
       throw new Error("Тайлангийн текст 10–12,000 тэмдэгт байна.");
     }
-
+    setRequestId(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
     setWarnings([]);
@@ -289,8 +309,9 @@ export default function Home() {
       throw new Error("AI-ийн мэдээллийн формат буруу байна.");
     }
 
-    const { result, reportId } = parsed.data;
+    const { result, requestId: savedRequestId } = parsed.data;
 
+    setRequestId(savedRequestId);
     setGoal({
       ...initialGoal,
       vehicle: result.vehicle,
@@ -303,11 +324,8 @@ export default function Home() {
       "AI-ийн гаргасан мэдээллийг шалгаад төсөв, хугацаагаа оруулаарай.",
     );
 
-    log(
-      reportId
-        ? "AI тайланг уншсан. Тайлан MongoDB-д хадгалагдсан."
-        : "AI тайлангаас мэдээллийг гаргасан.",
-    );
+    log(`AI тайлан хадгалагдсан. Хүсэлт: ${savedRequestId}`);
+    setStep(2);
 
     setStep(2);
   }
@@ -329,8 +347,13 @@ export default function Home() {
         "Машин, сэлбэг, засварын ажил, төсөв, хугацаагаа бөглөөрэй.",
       );
     }
-
+    if (!requestId) {
+      throw new Error(
+        "Хүсэлт үүсээгүй байна. Тайлангаа дахин боловсруулаарай.",
+      );
+    }
     const raw = await api("quotes", {
+      requestId,
       goal: {
         ...goal,
         vehicle: goal.vehicle.trim(),
@@ -338,7 +361,6 @@ export default function Home() {
         tasks: goal.tasks.trim(),
       },
     });
-
     const parsed = quotesResponseSchema.safeParse(raw);
 
     if (!parsed.success) {
@@ -356,7 +378,9 @@ export default function Home() {
 
   async function negotiate() {
     if (!selected) return;
-
+    if (!requestId) {
+      throw new Error("Хүсэлтийн дугаар олдсонгүй.");
+    }
     const current = selected;
 
     if (!Number.isFinite(target) || target <= 0 || target >= current.total) {
@@ -364,6 +388,7 @@ export default function Home() {
     }
 
     const raw = await api("negotiate", {
+      requestId,
       token: current.token,
       target,
     });
@@ -394,13 +419,16 @@ export default function Home() {
     if (!selected || !approved) {
       throw new Error("Эцсийн үнийг зөвшөөрнө үү.");
     }
+    if (!requestId) {
+      throw new Error("Хүсэлтийн дугаар олдсонгүй.");
+    }
 
     const raw = await api("confirm", {
+      requestId,
       token: selected.token,
       approved: true,
       approvedTotal: selected.total,
     });
-
     const parsed = confirmResponseSchema.safeParse(raw);
 
     if (!parsed.success) {
@@ -521,11 +549,15 @@ export default function Home() {
 
           <span className="badge">DEMO COMMERCE</span>
         </header>
-
         <p className="notice">
           Тайлангийн текстийг Gemini боловсруулна. Merchant саналууд demo
           өгөгдөлтэй. Бодит захиалга, booking болон төлбөр холбогдоогүй.
         </p>
+        {requestId && (
+          <p>
+            Хүсэлтийн дугаар: <strong>{requestId}</strong>
+          </p>
+        )}
 
         <nav aria-label="Хүсэлтийн үе шат">
           {["Тайлан", "Хүсэлт", "Саналууд", "Батлах", "Баримт"].map(
@@ -540,21 +572,17 @@ export default function Home() {
             ),
           )}
         </nav>
-
         {error && (
           <div className="error" role="alert">
             {error}
           </div>
         )}
-
         {message && (
           <div className="success" role="status">
             {message}
           </div>
         )}
-
         {busy && <p role="status">Хүсэлт боловсруулж байна…</p>}
-
         {/* 1. Тайлан */}
         {step === 1 && (
           <section>
@@ -626,7 +654,7 @@ export default function Home() {
               <button
                 className="secondary"
                 disabled={disabled || !report.trim()}
-                onClick={enterManually}
+                onClick={() => void run(enterManually)}
               >
                 Гараар бөглөх
               </button>
@@ -644,7 +672,6 @@ export default function Home() {
             </div>
           </section>
         )}
-
         {/* 2. Засварын хүсэлт */}
         {step === 2 && (
           <section>
@@ -772,7 +799,6 @@ export default function Home() {
             </div>
           </section>
         )}
-
         {/* 3. Санал харьцуулах */}
         {step === 3 && (
           <>
@@ -864,7 +890,6 @@ export default function Home() {
             </button>
           </>
         )}
-
         {/* 4. Үнэ тохирох, батлах */}
         {step === 4 && selected && (
           <section>
@@ -978,7 +1003,6 @@ export default function Home() {
             </div>
           </section>
         )}
-
         {/* 5. Баримт */}
         {step === 5 && receipt && (
           <section>
@@ -1052,7 +1076,6 @@ export default function Home() {
             </button>
           </section>
         )}
-
         {events.length > 0 && (
           <section className="timeline">
             <h3>Үйлдлийн явц</h3>
