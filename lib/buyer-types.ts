@@ -1,5 +1,5 @@
 import { z } from "zod";
-
+import { repairReportSchema } from "@/lib/repair-report";
 export const buyerGoalSchema = z.object({
   vehicle: z.string(),
   parts: z.string(),
@@ -42,3 +42,40 @@ export const buyerHistorySchema = z.object({
 });
 
 export type BuyerReceipt = z.infer<typeof buyerReceiptSchema>;
+export const savedRequestSummarySchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["draft", "quoted", "completed"]),
+  vehicle: z.string(),
+  budget: z.number(),
+  updatedAt: z.string(),
+});
+
+export const savedRequestSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["draft", "quoted", "completed"]),
+  report: z.string(),
+  extracted: repairReportSchema.optional(),
+  goal: buyerGoalSchema.optional(),
+  quotes: z.array(
+    buyerQuoteSchema.extend({
+      token: z.string().uuid(),
+    }),
+  ),
+  selectedQuote: buyerQuoteSchema
+    .extend({
+      token: z.string().uuid(),
+    })
+    .optional(),
+  receipt: buyerReceiptSchema.optional(),
+  updatedAt: z.string(),
+});
+
+export const savedRequestsResponseSchema = z.object({
+  requests: z.array(savedRequestSummarySchema),
+});
+
+export const savedRequestResponseSchema = z.object({
+  request: savedRequestSchema,
+});
+
+export type SavedRequestSummary = z.infer<typeof savedRequestSummarySchema>;
