@@ -95,6 +95,7 @@ test("service checks authenticated scope/schema before requesting any Mongo conn
   await assert.rejects(process(merchantId, buyerId, { ...input, extra: true }), RFQInputError);
   assert.equal(connections, 0);
   const failure = await process(merchantId, buyerId, input);
+  assert.ok("outcome" in failure);
   assert.equal(failure.outcome, "failed"); assert.ok(!JSON.stringify(failure).includes("private-db"));
 });
 test("demo A2A auth is independently configured, loopback only, and forbidden in production", async () => {

@@ -11,13 +11,13 @@ import {
 } from "@a2a-js/sdk/errors";
 import { authenticateA2A, getA2AConfig } from "./auth";
 import { getMerchantAgentCard, isA2AMerchant } from "./cards";
-import type { MerchantRFQResponse } from "./contracts";
+import type { MerchantA2AResponse } from "./contracts";
 import { processMerchantRFQ, RFQInputError } from "./service";
 
 export type A2APrincipal = { buyerId: string; allowedMerchantIds: string[] };
 export type MerchantA2ADependencies = {
   authenticate?: (request: Request, merchantId: string) => Promise<A2APrincipal>;
-  processRFQ?: (merchantId: string, buyerId: string, input: unknown) => Promise<MerchantRFQResponse>;
+  processRFQ?: (merchantId: string, buyerId: string, input: unknown) => Promise<MerchantA2AResponse>;
   origin?: string;
 };
 
@@ -159,7 +159,7 @@ export async function handleMerchantA2A(request: Request, merchantId: string, de
     let executionFailure: unknown;
     const executor: AgentExecutor = {
       async execute(context: RequestContext, eventBus: ExecutionEventBus) {
-        let response: MerchantRFQResponse | undefined;
+        let response: MerchantA2AResponse | undefined;
         try {
           const part = context.userMessage.parts[0];
           response = await (dependencies.processRFQ ?? processMerchantRFQ)(merchantId, principal.buyerId, part.content?.value);

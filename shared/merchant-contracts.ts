@@ -67,7 +67,7 @@ export const transactionSchema = z.strictObject({ ...base, buyerId: idSchema,
 });
 export const auditEventSchema = z.strictObject({ ...base, actorId: idSchema,
   actorKind: z.enum(["buyer", "merchant", "system"]),
-  action: z.enum(["profile_saved", "rfq_received", "rfq_processed", "rfq_failed", "quote_created", "negotiation_recorded", "approval_verified", "approval_revoked", "transaction_created", "transaction_updated", "inventory_saved", "service_saved", "slot_saved", "settings_saved", "demo_seeded"]),
+  action: z.enum(["profile_saved", "rfq_received", "rfq_processed", "rfq_failed", "quote_created", "negotiation_recorded", "approval_verified", "approval_revoked", "transaction_created", "transaction_updated", "inventory_saved", "service_saved", "slot_saved", "settings_saved", "demo_seeded", "telegram_binding_issued", "telegram_bound", "telegram_revoked", "telegram_draft_created", "telegram_draft_rejected", "telegram_draft_confirmed", "quote_published", "telegram_notified", "negotiation_requested", "negotiation_decided", "negotiation_timed_out", "negotiation_notified"]),
   entityId: idSchema, correlationId: idSchema, outcome: z.enum(["success", "failure"]),
 });
 export type MerchantProfile = z.infer<typeof merchantProfileSchema>;

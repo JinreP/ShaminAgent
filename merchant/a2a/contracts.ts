@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { idSchema, timestampSchema, rfqSchema, quoteSchema } from "../../shared/merchant-contracts";
+import type { QuoteUpdatesResponse } from "../telegram/contracts";
+import type { NegotiationResponse } from "../negotiation/contracts";
 
 // Additive A2A domain payload; existing v1 RFQ/Quote fields are unchanged.
 export const merchantRFQEnvelopeSchema = z.strictObject({
@@ -18,3 +20,4 @@ export const merchantRFQResponseSchema = z.strictObject({
 }).refine(v => (v.outcome === "quoted" || v.outcome === "partial") === Boolean(v.quote), "Үнийн саналын үр дүн тохирохгүй байна.");
 export type MerchantRFQEnvelope = z.infer<typeof merchantRFQEnvelopeSchema>;
 export type MerchantRFQResponse = z.infer<typeof merchantRFQResponseSchema>;
+export type MerchantA2AResponse = MerchantRFQResponse | QuoteUpdatesResponse | NegotiationResponse;

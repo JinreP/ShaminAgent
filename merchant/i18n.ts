@@ -7,6 +7,8 @@ export const fieldLabels: Record<string, string> = {
   endsAt: "Дуусах огноо (цагийн бүстэй ISO огноо)", capacity: "Цагийн багтаамж", status: "Төлөв",
   maxDiscountBps: "Хөнгөлөлтийн дээд хэмжээ (суурь нэгж; 100 = 1%)", negotiationEnabled: "Үнэ тохиролцох боломжтой",
   humanApprovalRequired: "Хүний зөвшөөрөл шаардах", capabilities: "Нийтэд харагдах боломжууд (мөр бүрд нэг)",
+  maxNegotiationRounds: "Хэлэлцээний оролдлогын дээд тоо", automaticNegotiationEnabled: "Автомат хэлэлцээ зөвшөөрөх",
+  negotiationTimeoutSeconds: "Хүний хариу хүлээх хугацаа (секунд)",
   make: "Үйлдвэрлэгч", model: "Загвар", generation: "Үе", yearFrom: "Эхлэх он", yearTo: "Дуусах он",
   serviceIds: "Үйлчилгээ", compatibility: "Тохирох автомашин", vehicles: "Тохирох автомашин",
 };
@@ -55,7 +57,13 @@ const statusLabels: Record<string, string> = {
   cancelled: "Цуцалсан", available: "Боломжтой", blocked: "Хаалттай", accepted: "Зөвшөөрнө",
   inspection_required: "Шалгах шаардлагатай", not_accepted: "Зөвшөөрөхгүй", requested: "Хүсэлт ирсэн",
   countered: "Эсрэг санал өгсөн", rejected: "Татгалзсан", verified: "Шалгаж баталгаажуулсан", revoked: "Хүчингүй болгосон",
-  aftermarket: knownText.aftermarket, used: knownText.used, oem: knownText.oem,
+  approval_pending: "Хэрэглэгчийн зөвшөөрөл хүлээж байна", approved: "Зөвшөөрсөн", reserved: "Нөөцөлсөн",
+  booked: "Цаг захиалсан", payment_pending: "Туршилтын төлбөр хүлээж байна", payment_failed: "Туршилтын төлбөр амжилтгүй",
+  recovery_required: "Сэргээх ажиллагаа шаардлагатай", awaiting_approval: "Зөвшөөрөл хүлээж байна",
+  awaiting_payment: "Төлбөр хүлээж байна", in_progress: "Гүйцэтгэж байна", ready: "Бэлэн",
+  in_service: "Засварлаж байна", preparing: "Бэлтгэж байна", completed: "Дууссан",
+  succeeded: "Амжилттай",
+  aftermarket: knownText.aftermarket, used: knownText.used, oem: knownText.oem, any: "Аль ч төрөл",
 };
 export function statusLabel(status: string): string { return statusLabels[status] ?? "Төлөв тодорхойгүй"; }
 export const policyLabel = statusLabel;

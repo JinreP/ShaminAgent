@@ -1,6 +1,17 @@
 // Merchant administration only; these schemas are not Buyer discovery payloads.
 import { z } from "zod";
 import { idSchema, timestampSchema, moneySchema, merchantProfileSchema, type RFQ, type Quote, type Transaction } from "../shared/merchant-contracts";
+import type { PartsOrder, RepairBooking } from "./commerce/contracts";
+
+export type DashboardCommerceTransaction = {
+  id: string;
+  kind: "parts_order" | "repair_booking" | "parts_and_repair";
+  status: "approval_pending" | "approved" | "reserved" | "booked" | "payment_pending" | "confirmed" |
+    "payment_failed" | "failed" | "cancelled" | "recovery_required";
+  progress: "awaiting_approval" | "processing" | "awaiting_payment" | "in_progress" | "ready" | "completed" | "cancelled";
+  updatedAt: string;
+  paymentId?: string;
+};
 
 const base = { contractVersion: z.literal("1"), id: idSchema, merchantId: idSchema,
   createdAt: timestampSchema, mode: z.literal("simulated") };
@@ -28,6 +39,9 @@ export const slotSchema = z.strictObject({ ...base, serviceIds: z.array(idSchema
 }).refine(v => Date.parse(v.startsAt) < Date.parse(v.endsAt), "Цагийн төгсгөл эхлэх цагаас хойш байх ёстой.");
 export const settingsSchema = z.strictObject({ ...base, maxDiscountBps: z.number().int().min(0).max(10000),
   negotiationEnabled: z.boolean(), humanApprovalRequired: z.boolean(),
+  maxNegotiationRounds: z.number().int().min(1).max(20).default(3),
+  automaticNegotiationEnabled: z.boolean().default(false),
+  negotiationTimeoutSeconds: z.number().int().min(30).max(3600).default(300),
 }).refine(v => v.id === v.merchantId, "Тохиргооны дугаар худалдаачны дугаартай ижил байх ёстой.");
 export const adminSchemas = { profile: merchantProfileSchema, inventory: inventorySchema,
   service: serviceSchema, slot: slotSchema, settings: settingsSchema };
@@ -41,4 +55,7 @@ export type DashboardSnapshot = {
   merchantId: string; profile: Versioned<"profile">; inventory: Versioned<"inventory">[];
   services: Versioned<"service">[]; slots: Versioned<"slot">[]; settings: Versioned<"settings"> | null;
   rfqs: RFQ[]; quotes: Quote[]; transactions: Transaction[];
+  commerceOrders: (PartsOrder & { payment: "pending" | "succeeded" | "failed" })[];
+  commerceBookings: (RepairBooking & { payment: "pending" | "succeeded" | "failed" })[];
+  commerceTransactions: DashboardCommerceTransaction[];
 };
