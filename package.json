@@ -10,11 +10,14 @@
     "typecheck": "tsc --noEmit",
     "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
     "merchant:db:init": "node --conditions=react-server --import tsx scripts/merchant-db-init.ts",
-    "merchant:demo:seed": "node --conditions=react-server --import tsx scripts/merchant-demo-seed.ts"
+    "merchant:demo:seed": "node --conditions=react-server --import tsx scripts/merchant-demo-seed.ts",
+    "test:merchant:a2a": "node --conditions=react-server --import tsx scripts/merchant-a2a-local-test.ts"
   },
   "dependencies": {
+    "@a2a-js/sdk": "^1.3.0",
     "@google/genai": "^2.27.0",
     "@next/env": "^16.3.8",
+    "jose": "^6.2.12",
     "mongodb": "^7.7.0",
     "next": "16.3.8",
     "react": "19.2.8",
@@ -29,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
+    "mongodb-memory-server": "^11.3.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

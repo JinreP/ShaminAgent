@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { DEMO_COOKIE, demoConfig, verifyDemoSession, MerchantAccessError } from "./demo-auth";
 import { EditConflictError } from "./admin-store";
+import { merchantErrorMessage, validationMessage } from "../i18n";
 
 export function json(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -19,9 +20,9 @@ export async function requestBody(request: Request) {
   try { return JSON.parse(text) as unknown; } catch { throw new MerchantAccessError("Invalid JSON", 400); }
 }
 export function apiError(error: unknown) {
-  if (error instanceof MerchantAccessError) return json({ error: error.message }, error.status);
-  if (error instanceof EditConflictError) return json({ error: error.message }, 409);
-  if (error instanceof ZodError) return json({ error: "Invalid fields", fields: error.issues.map(i => ({ path: i.path.join("."), message: i.message })) }, 400);
+  if (error instanceof MerchantAccessError) return json({ error: merchantErrorMessage(error.message) }, error.status);
+  if (error instanceof EditConflictError) return json({ error: merchantErrorMessage(error.message) }, 409);
+  if (error instanceof ZodError) return json({ error: "Талбарын утга буруу байна", fields: error.issues.map(i => ({ path: i.path.join("."), message: validationMessage(i.message) })) }, 400);
   // Never return MongoDB connection strings, documents or provider credentials.
-  return json({ error: "Operation failed. Check merchant scope, resource references and database configuration." }, 503);
+  return json({ error: "Үйлдэл амжилтгүй боллоо. Хандалтын эрх, мэдээлэл болон өгөгдлийн сангийн тохиргоог шалгана уу." }, 503);
 }

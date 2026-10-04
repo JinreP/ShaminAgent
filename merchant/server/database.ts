@@ -1,16 +1,17 @@
 import 'server-only';
 import { MongoClient, type Db, type IndexDescription } from "mongodb";
 import { readDatabaseEnv } from "./env";
+import { explainMerchantFailure } from "./diagnostics";
 
 let connection: Promise<MongoClient> | undefined;
 export async function getMerchantClient(): Promise<MongoClient> {
   if (!connection) {
     const env = readDatabaseEnv();
     const client = new MongoClient(env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
-    connection = client.connect().catch(async () => {
+    connection = client.connect().catch(async (cause: unknown) => {
       connection = undefined;
-      await client.close();
-      throw new Error("Merchant database connection failed");
+      await client.close().catch(() => {});
+      throw new Error(explainMerchantFailure(cause).message, { cause });
     });
   }
   return connection;
@@ -27,6 +28,7 @@ const identity: IndexDescription = { key: { merchantId: 1, id: 1 }, unique: true
 export const merchantIndexes: Record<string, IndexDescription[]> = {
   merchant_profiles: [identity],
   merchant_rfqs: [identity, { key: { merchantId: 1, buyerId: 1, createdAt: -1 } }],
+  merchant_rfq_processing: [identity, { key: { merchantId: 1, correlationId: 1 } }],
   merchant_quotes: [identity, { key: { merchantId: 1, rfqId: 1, revision: 1 }, unique: true }],
   merchant_negotiations: [identity, { key: { merchantId: 1, quoteId: 1, createdAt: -1 } }],
   merchant_approvals: [identity, { key: { merchantId: 1, buyerId: 1, quoteId: 1, quoteRevision: 1 } }],

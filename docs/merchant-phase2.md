@@ -83,3 +83,50 @@ MERCHANT_TEST_MONGODB_URI. Set that variable to a disposable replica set before
 each suite creates and drops a unique database. The Phase 2 integration
 suite verifies edits through a new MongoDB connection, stale writes, isolation,
 slot updates and idempotent seeds. No in-memory fallback runs in the application.
+
+## Diagnose a seed failure without changing the shared database
+
+Run `npm run merchant:demo:seed -- --check` first. This mode loads the local
+development environment, reports variable presence and minimum secret-length
+checks without displaying values, validates configuration, and attempts a
+read-only MongoDB connection/ping/hello. If connected, it reads existing fixture
+identities, deterministic seed audits, collections and indexes. It never calls
+the seed or index initializer and never creates a database or collection.
+Existing shell environment variables take precedence over environment files.
+NODE_ENV=production continues to forbid normal demo seeding. The script chooses
+development env-file precedence for local use rather than silently choosing
+production-specific env files when NODE_ENV is unset.
+
+Failures now show the stage and a safe category: missing configuration, DNS,
+TLS, authentication, authorization, topology, duplicate key or index conflict.
+The driver cause is preserved internally; output contains only classified
+messages and known error codes, never raw driver messages, stacks, connection
+strings, usernames, passwords or private documents. TLS failure occurs before
+authentication can be verified; it is not evidence that a password is wrong.
+
+The seed is conditionally idempotent: deterministic IDs and `$setOnInsert`
+preserve edits; reruns do not add audit events for existing fixtures. It performs
+no deletions or replacement updates. It is still a database mutation: index
+initialization occurs outside the fixture/audit transaction, and may create
+collections or leave index changes after a later failure. A missing fixture
+with its original audit retained can cause a duplicate-key failure. Non-simulated
+or malformed private fixture collisions must be reviewed rather than silently
+accepted. `--check` reports these cases but does not repair them or prove all
+write permissions/global duplicate-key conditions.
+
+Do not execute normal seeding against the shared database as a debugging step.
+Use the read-only check, review any pending writes and metadata changes with the
+database owner, and only execute the normal seed in an already approved demo
+target. Do not point the integration suites at the shared database: those suites
+create and drop their own databases. For debugging without database writes, run:
+
+```powershell
+node --conditions=react-server --import tsx --test tests/foundation.test.ts tests/merchant-phase2.test.ts tests/merchant-diagnostics.test.ts
+```
+
+For Atlas connection failures, see the official
+[connection troubleshooting guide](https://www.mongodb.com/docs/atlas/troubleshoot-connection/).
+Atlas IP access and TLS/network configuration must allow this machine. Do not
+disable TLS verification or alter existing MongoDB credentials to mask a TLS error.
+Multi-document transactions require a replica set or sharded deployment; see
+[MongoDB transaction requirements](https://www.mongodb.com/docs/manual/core/transactions-production-consideration/).
