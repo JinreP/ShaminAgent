@@ -1,5 +1,25 @@
 import { z } from "zod";
 import { repairReportSchema } from "@/lib/repair-report";
+import { quoteSchema as merchantQuoteSchema } from "@/shared/merchant-contracts";
+import { bookingTermsSchema } from "@/merchant/commerce/contracts";
+
+export const merchantOfferSchema = z.object({
+  quote: merchantQuoteSchema,
+  correlationId: z.string(),
+});
+export const merchantBundleSchema = z.object({
+  parts: merchantOfferSchema,
+  repair: merchantOfferSchema,
+  booking: bookingTermsSchema,
+});
+export const buyerCheckoutSchema = z.object({
+  transactionId: z.string(),
+  quoteToken: z.string().uuid(),
+  approvedTotal: z.number(),
+  approvalId: z.string().optional(),
+  approvalUrl: z.string().url().optional(),
+  expiresAt: z.string(),
+});
 export const buyerGoalSchema = z.object({
   vehicle: z.string(),
   parts: z.string(),
@@ -25,6 +45,7 @@ export const buyerQuoteSchema = z.object({
 
   // Сервер баталсан receipt дотор quote token хэрэггүй.
   token: z.string().optional(),
+  merchant: merchantBundleSchema.optional(),
 });
 
 export const buyerReceiptSchema = z.object({
@@ -35,6 +56,8 @@ export const buyerReceiptSchema = z.object({
   quote: buyerQuoteSchema,
   mode: z.literal("demo"),
   status: z.literal("demo_completed"),
+  transactionId: z.string().optional(),
+  source: z.literal("merchant").optional(),
 });
 
 export const buyerHistorySchema = z.object({
@@ -67,6 +90,8 @@ export const savedRequestSchema = z.object({
     })
     .optional(),
   receipt: buyerReceiptSchema.optional(),
+  checkout: buyerCheckoutSchema.optional(),
+  pendingTarget: z.number().optional(),
   updatedAt: z.string(),
 });
 
