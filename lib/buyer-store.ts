@@ -13,23 +13,22 @@ import {
 } from "@/lib/buyer-types";
 import type { RepairReport } from "@/lib/repair-report";
 
-export class BuyerWorkflowError extends Error {}
+import { createBuyerMerchantGateway } from "./buyer-merchant-client";
+import { BuyerMerchantWorkflow, BuyerWorkflowError } from "./buyer-merchant-workflow";
+import { buyerCheckoutSchema } from "./buyer-types";
+export { BuyerWorkflowError };
 
 export const validGoalSchema = buyerGoalSchema.extend({
   vehicle: z.string().trim().min(1).max(200),
   parts: z.string().trim().min(1).max(2000),
   tasks: z.string().trim().min(1).max(2000),
-  budget: z.number().finite().positive(),
+  budget: z.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER / 100)),
   days: z.number().int().min(1).max(30),
   preference: z.enum(["Any", "OEM", "Aftermarket", "Used"]),
 });
 
-const storedQuoteSchema = buyerQuoteSchema.extend({
-  token: z.string().uuid(),
-});
-
 type Goal = z.infer<typeof validGoalSchema>;
-type Quote = z.infer<typeof storedQuoteSchema>;
+type Quote = z.infer<typeof buyerQuoteSchema> & { token: string };
 
 type Event = {
   action: string;
@@ -55,6 +54,8 @@ type RepairRequestDocument = {
   };
   receipt?: BuyerReceipt;
   receiptToken?: string;
+  checkout?: z.infer<typeof buyerCheckoutSchema>;
+  pendingNegotiation?: { target: number };
   events: Event[];
   createdAt: Date;
   updatedAt: Date;
@@ -66,39 +67,6 @@ type LegacyReceiptDocument = {
   receipt: BuyerReceipt;
   createdAt: Date;
 };
-
-const demoMerchants = [
-  {
-    id: "a",
-    partsMerchant: "Prius Parts",
-    repairMerchant: "Auto Care",
-    kind: "Aftermarket",
-    parts: 1050000,
-    labor: 500000,
-    days: 3,
-    warranty: "3 сар",
-  },
-  {
-    id: "b",
-    partsMerchant: "Japan Used",
-    repairMerchant: "Quick Garage",
-    kind: "Used",
-    parts: 900000,
-    labor: 400000,
-    days: 2,
-    warranty: "1 сар",
-  },
-  {
-    id: "c",
-    partsMerchant: "OEM Center",
-    repairMerchant: "Auto Care",
-    kind: "OEM",
-    parts: 1750000,
-    labor: 500000,
-    days: 3,
-    warranty: "6 сар",
-  },
-];
 
 async function context() {
   const ownerId = await getBuyerSession();
@@ -148,303 +116,18 @@ export function createManualRequest(report: string) {
   return createDraft(report);
 }
 
+async function merchantWorkflow() {
+  const { db, ownerId } = await context();
+  return new BuyerMerchantWorkflow(db, ownerId, createBuyerMerchantGateway());
+}
 export async function getRequestQuotes(requestId: string, goal: Goal) {
-  const { ownerId, requests } = await context();
-
-  const current = await requests.findOne({
-    _id: requestId,
-    ownerId,
-  });
-
-  if (!current) {
-    throw new BuyerWorkflowError("Хүсэлт олдсонгүй.");
-  }
-
-  if (current.status === "completed") {
-    throw new BuyerWorkflowError(
-      "Дууссан хүсэлтийг өөрчлөхгүй. Шинэ хүсэлт үүсгээрэй.",
-    );
-  }
-
-  if (
-    goal.vehicle !== "Toyota Prius 30" ||
-    goal.parts !== "Урд бампер, зүүн урд гэрэл" ||
-    goal.tasks !== "Солих, бампер будах"
-  ) {
-    throw new BuyerWorkflowError(
-      "Demo merchant зөвхөн Prius 30-ийн урд бампер, зүүн гэрэл солих болон бампер будах хүсэлтийг дэмжинэ.",
-    );
-  }
-
-  const now = new Date();
-
-  const quotes: Quote[] = demoMerchants
-    .filter(
-      (merchant) =>
-        goal.preference === "Any" || merchant.kind === goal.preference,
-    )
-    .map((merchant) => ({
-      ...merchant,
-      total: merchant.parts + merchant.labor,
-      goal,
-      revision: 1,
-      expiresAt: Date.now() + 15 * 60 * 1000,
-
-      // Үнэ браузераас авахгүй.
-      // Token-оор MongoDB дахь саналыг олно.
-      token: randomUUID(),
-    }));
-
-  const updated = await requests.updateOne(
-    {
-      _id: requestId,
-      ownerId,
-      version: current.version,
-      status: { $in: ["draft", "quoted"] },
-    },
-    {
-      $set: {
-        goal,
-        quotes,
-        status: "quoted",
-        updatedAt: now,
-      },
-      $unset: {
-        selectedQuote: "",
-        approval: "",
-      },
-      $inc: { version: 1 },
-      $push: {
-        events: {
-          action: "goal_confirmed_and_quotes_received",
-          at: now,
-        },
-      },
-    },
-  );
-
-  if (updated.matchedCount !== 1) {
-    throw new BuyerWorkflowError("Хүсэлт өөрчлөгдсөн байна. Дахин оролдоорой.");
-  }
-
-  return { requestId, quotes, mode: "demo" };
+  return (await merchantWorkflow()).quotes(requestId, goal);
 }
-
-function assertActiveQuote(quote: Quote) {
-  if (quote.expiresAt <= Date.now()) {
-    throw new BuyerWorkflowError(
-      "Саналын хугацаа дууссан. Дахин санал аваарай.",
-    );
-  }
+export async function negotiateRequest(requestId: string, token: string, target: number) {
+  return (await merchantWorkflow()).negotiate(requestId, token, target);
 }
-
-export async function negotiateRequest(
-  requestId: string,
-  token: string,
-  target: number,
-) {
-  const { ownerId, requests } = await context();
-
-  const current = await requests.findOne({
-    _id: requestId,
-    ownerId,
-    status: "quoted",
-  });
-
-  const quote = current?.quotes.find((item) => item.token === token);
-
-  if (!current || !quote) {
-    throw new BuyerWorkflowError("Санал олдсонгүй эсвэл шинэчлэгдсэн байна.");
-  }
-
-  assertActiveQuote(quote);
-
-  if (quote.revision !== 1) {
-    throw new BuyerWorkflowError("Demo дээр нэг удаа үнэ тохиролцоно.");
-  }
-
-  if (target <= 0 || target >= quote.total) {
-    throw new BuyerWorkflowError("Зорилтот үнэ одоогийн үнээс бага байна.");
-  }
-
-  const minimumParts = Math.ceil(quote.parts * 0.96);
-  const minimumLabor = Math.ceil(quote.labor * 0.94);
-  const total = Math.max(target, minimumParts + minimumLabor);
-  const discount = quote.total - total;
-
-  const parts = quote.parts - Math.min(quote.parts - minimumParts, discount);
-
-  const nextQuote: Quote = {
-    ...quote,
-    parts,
-    labor: total - parts,
-    total,
-    revision: 2,
-    token: randomUUID(),
-  };
-
-  const nextQuotes = current.quotes.map((item) =>
-    item.token === token ? nextQuote : item,
-  );
-
-  const now = new Date();
-
-  const updated = await requests.updateOne(
-    {
-      _id: requestId,
-      ownerId,
-      status: "quoted",
-      version: current.version,
-    },
-    {
-      $set: {
-        quotes: nextQuotes,
-        selectedQuote: nextQuote,
-        updatedAt: now,
-      },
-      $unset: { approval: "" },
-      $inc: { version: 1 },
-      $push: {
-        events: {
-          action: "quote_negotiated",
-          at: now,
-        },
-      },
-    },
-  );
-
-  if (updated.matchedCount !== 1) {
-    throw new BuyerWorkflowError(
-      "Санал өөрчлөгдсөн байна. Шинэ саналаа шалгаарай.",
-    );
-  }
-
-  return {
-    requestId,
-    quote: nextQuote,
-    message:
-      total <= target
-        ? "Demo merchant-ууд таны үнийг зөвшөөрлөө."
-        : "Demo merchant-ууд эсрэг санал өглөө.",
-  };
-}
-
-export async function confirmRequest(
-  requestId: string,
-  token: string,
-  approvedTotal: number,
-) {
-  const { ownerId, requests } = await context();
-
-  const current = await requests.findOne({
-    _id: requestId,
-    ownerId,
-  });
-
-  if (!current) {
-    throw new BuyerWorkflowError("Хүсэлт олдсонгүй.");
-  }
-
-  // Амжилттай Confirm-ийг дахин явуулбал ижил баримт буцаана.
-  if (current.status === "completed") {
-    if (
-      current.receipt &&
-      current.receiptToken === token &&
-      current.receipt.quote.total === approvedTotal
-    ) {
-      return {
-        requestId,
-        receipt: buyerReceiptSchema.parse(current.receipt),
-      };
-    }
-
-    throw new BuyerWorkflowError(
-      "Энэ хүсэлт өөр саналаар аль хэдийн батлагдсан.",
-    );
-  }
-
-  const quote = current.quotes.find((item) => item.token === token);
-
-  if (current.status !== "quoted" || !quote) {
-    throw new BuyerWorkflowError("Батлах санал олдсонгүй.");
-  }
-
-  assertActiveQuote(quote);
-
-  if (approvedTotal !== quote.total) {
-    throw new BuyerWorkflowError(
-      "Үнэ өөрчлөгдсөн байна. Эцсийн үнийг дахин зөвшөөрөөрэй.",
-    );
-  }
-
-  const now = new Date();
-  const id = requestId.toUpperCase();
-
-  const receipt = buyerReceiptSchema.parse({
-    id,
-    orderId: `ORD-${id}`,
-    bookingId: `BOOK-${id}`,
-    paymentId: `MOCK-${id}`,
-    quote,
-    mode: "demo",
-    status: "demo_completed",
-  });
-
-  // Зөвшөөрөл болон demo баримтыг нэг document-д
-  // нэг atomic update-аар хадгална.
-  const updated = await requests.updateOne(
-    {
-      _id: requestId,
-      ownerId,
-      status: "quoted",
-      version: current.version,
-    },
-    {
-      $set: {
-        selectedQuote: quote,
-        approval: {
-          approved: true,
-          total: quote.total,
-          quoteToken: token,
-          at: now,
-        },
-        receipt,
-        receiptToken: token,
-        status: "completed",
-        updatedAt: now,
-      },
-      $inc: { version: 1 },
-      $push: {
-        events: {
-          $each: [
-            { action: "user_approved", at: now },
-            { action: "demo_completed", at: now },
-          ],
-        },
-      },
-    },
-  );
-
-  if (updated.matchedCount !== 1) {
-    // Зэрэг ирсэн хоёр Confirm-ийн эхнийх хадгалсан байж болно.
-    const saved = await requests.findOne({
-      _id: requestId,
-      ownerId,
-      status: "completed",
-      receiptToken: token,
-    });
-
-    if (saved?.receipt && saved.receipt.quote.total === approvedTotal) {
-      return {
-        requestId,
-        receipt: buyerReceiptSchema.parse(saved.receipt),
-      };
-    }
-
-    throw new BuyerWorkflowError("Хүсэлт өөрчлөгдсөн байна. Дахин шалгаарай.");
-  }
-
-  return { requestId, receipt };
+export async function confirmRequest(requestId: string, token: string, approvedTotal: number) {
+  return (await merchantWorkflow()).confirm(requestId, token, approvedTotal);
 }
 
 export async function getBuyerHistory() {
@@ -555,6 +238,8 @@ export async function readBuyerRequest(requestId: string) {
     quotes: document.quotes,
     selectedQuote: document.selectedQuote,
     receipt: document.receipt,
+    checkout: document.checkout,
+    pendingTarget: document.pendingNegotiation?.target,
     updatedAt: document.updatedAt.toISOString(),
   };
 }

@@ -170,7 +170,13 @@ export class CommerceStore {
           issues.push("Засварын цаг өөрчлөгдсөн эсвэл боломжгүй байна.");
         else {
           const counter = await this.db.collection(slotCounters).findOne({ merchantId: quote.merchantId, id: slot.id }, session ? { session } : {});
-          if (Number(counter?.count ?? 0) >= slot.capacity) issues.push("Засварын цагийн багтаамж дүүрсэн байна.");
+          // The payment recheck must count this transaction's own slot as
+          // available to it, while still excluding every other reservation.
+          const ownReservation = ownTransactionId ? await this.db.collection(slotReservations).findOne({
+            merchantId: quote.merchantId, slotId: slot.id, transactionId: ownTransactionId, status: "reserved",
+          }, session ? { session } : {}) : null;
+          const occupiedByOthers = Math.max(0, Number(counter?.count ?? 0) - (ownReservation ? 1 : 0));
+          if (occupiedByOthers >= slot.capacity) issues.push("Засварын цагийн багтаамж дүүрсэн байна.");
           else windows.push({ merchantId: quote.merchantId, startsAt: slot.startsAt, endsAt: slot.endsAt,
             customerSuppliedParts: quote.terms.includes("Захиалагчийн") });
         }
@@ -489,7 +495,9 @@ export class CommerceStore {
           serviceIds: quote.lines.map(line => line.resourceId), slotId: slot.id,
           startsAt: bookingTerms.startsAt, endsAt: bookingTerms.endsAt,
           customerSuppliedParts: bookingTerms.customerSuppliedParts, status: "booked", createdAt: now, updatedAt: now });
-        await this.db.collection(bookings).insertOne(booking, { session });
+        // MongoDB mutates the inserted object by adding _id. Keep the public
+        // strict booking contract free of storage metadata on the first call.
+        await this.db.collection(bookings).insertOne({ ...booking }, { session });
         const transaction = await this.db.collection(transactions).findOne({ merchantId: approval.merchantId, id: approval.transactionId }, { session });
         if (!transaction || !["approved", "reserved"].includes(transaction.status)) throw new CommerceStoreError("conflict");
         const transactionUpdate = await this.db.collection(transactions).updateOne({ merchantId: approval.merchantId, id: approval.transactionId,

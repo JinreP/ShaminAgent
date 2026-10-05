@@ -10,6 +10,8 @@ import {
   confirmRequest,
 } from "@/lib/buyer-store";
 
+import { BuyerMerchantError } from "@/lib/buyer-merchant-client";
+
 export const runtime = "nodejs";
 
 const bodySchema = z.discriminatedUnion("action", [
@@ -28,7 +30,7 @@ const bodySchema = z.discriminatedUnion("action", [
     action: z.literal("negotiate"),
     requestId: z.string().uuid(),
     token: z.string().uuid(),
-    target: z.number().finite().positive(),
+    target: z.number().int().positive(),
   }),
 
   z.object({
@@ -106,6 +108,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
+    if (error instanceof BuyerMerchantError) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
     console.error(
       "Buyer workflow error:",
       error instanceof Error ? error.name : "Unknown error",
@@ -114,7 +119,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          "Хүсэлтийг хадгалж чадсангүй. MongoDB холболтоо шалгаад дахин оролдоорой.",
+          "Buyer–Merchant хүсэлтийг боловсруулах боломжгүй байна. API тохиргоо, MongoDB болон Merchant үйлчилгээг шалгаарай.",
       },
       { status: 503 },
     );

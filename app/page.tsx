@@ -10,6 +10,7 @@ import {
   buyerQuoteSchema,
   buyerReceiptSchema,
   buyerHistorySchema,
+  buyerCheckoutSchema,
   savedRequestsResponseSchema,
   savedRequestResponseSchema,
   type BuyerReceipt,
@@ -23,17 +24,21 @@ const quoteSchema = buyerQuoteSchema.extend({
 });
 
 const quotesResponseSchema = z.object({
+  issues: z.array(z.string()).optional(),
   quotes: z.array(quoteSchema),
 });
 
 const negotiationResponseSchema = z.object({
   quote: quoteSchema,
   message: z.string(),
+  pending: z.boolean().optional(),
 });
 
 const confirmResponseSchema = z.object({
-  receipt: buyerReceiptSchema,
-});
+  receipt: buyerReceiptSchema.optional(),
+  checkout: buyerCheckoutSchema.optional(),
+  message: z.string().optional(),
+}).refine(value => Boolean(value.receipt) !== Boolean(value.checkout));
 
 const parseResponseSchema = z.object({
   result: repairReportSchema,
@@ -141,6 +146,8 @@ export default function Home() {
 
   const [target, setTarget] = useState(0);
   const [approved, setApproved] = useState(false);
+  const [checkout, setCheckout] = useState<z.infer<typeof buyerCheckoutSchema> | null>(null);
+  const [pendingTarget, setPendingTarget] = useState<number | null>(null);
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [history, setHistory] = useState<Receipt[]>([]);
@@ -299,6 +306,8 @@ export default function Home() {
   }
 
   function clearRequestResults() {
+    setCheckout(null);
+    setPendingTarget(null);
     setQuotes([]);
     setSelected(null);
     setExpiredTokens([]);
@@ -462,13 +471,16 @@ export default function Home() {
     }
 
     setExpiredTokens([]);
+    setCheckout(null);
+    setPendingTarget(null);
     setQuotes(parsed.data.quotes);
     setSelected(null);
     setReceipt(null);
     setApproved(false);
     setTarget(0);
 
-    log("Хүсэлт батлагдсан. Demo merchant саналуудыг авсан.");
+    setMessage(parsed.data.issues?.join("\n") ?? "Merchant саналуудыг авлаа.");
+    log("Хүсэлт батлагдсан. Merchant A2A саналуудыг авсан.");
     setStep(3);
   }
 
@@ -511,7 +523,7 @@ export default function Home() {
 
   const targetValid =
     selected !== null &&
-    !selectedExpired &&
+    (!selectedExpired || pendingTarget !== null) &&
     Number.isFinite(target) &&
     target > 0 &&
     target < selected.total;
@@ -527,7 +539,7 @@ export default function Home() {
 
     const current = selected;
 
-    assertActiveQuote(current);
+    if (pendingTarget === null) assertActiveQuote(current);
 
     if (current.revision !== 1) {
       throw new Error("Demo дээр нэг удаа үнэ тохиролцоно.");
@@ -551,6 +563,7 @@ export default function Home() {
 
     const nextQuote = parsed.data.quote;
 
+    setPendingTarget(parsed.data.pending ? target : null);
     setSelected(nextQuote);
     setQuotes((old) =>
       old.map((quote) => (quote.id === nextQuote.id ? nextQuote : quote)),
@@ -564,7 +577,7 @@ export default function Home() {
   }
 
   async function confirm() {
-    if (!selected || !approved) {
+    if (!selected || (!checkout && !approved)) {
       throw new Error("Эцсийн үнийг зөвшөөрнө үү.");
     }
 
@@ -572,7 +585,7 @@ export default function Home() {
       throw new Error("Хүсэлтийн дугаар олдсонгүй.");
     }
 
-    assertActiveQuote(selected);
+    if (!checkout) assertActiveQuote(selected);
 
     const raw = await api("confirm", {
       requestId,
@@ -587,7 +600,15 @@ export default function Home() {
       throw new Error("Баримтын формат буруу байна.");
     }
 
+    if (parsed.data.checkout) {
+      setCheckout(parsed.data.checkout);
+      setMessage(parsed.data.message ?? "Зөвшөөрлийн хуудсыг нээж батлаарай.");
+      log("Merchant зөвшөөрөл хүлээж байна.");
+      return;
+    }
     const savedReceipt = parsed.data.receipt;
+    if (!savedReceipt) throw new Error("Merchant баримт ирсэнгүй.");
+    setCheckout(null);
 
     setReceipt(savedReceipt);
     setHistory((old) =>
@@ -665,6 +686,8 @@ export default function Home() {
       .filter((quote) => quote.expiresAt <= now)
       .map((quote) => quote.token);
 
+    setCheckout(saved.checkout ?? null);
+    setPendingTarget(saved.pendingTarget ?? null);
     setRequestId(saved.id);
     setReport(saved.report);
     setGoal(restoredGoal);
@@ -687,19 +710,19 @@ export default function Home() {
 
       if (
         selectedQuote &&
-        selectedQuote.expiresAt > now &&
+        (selectedQuote.expiresAt > now || saved.checkout || saved.pendingTarget !== undefined) &&
         saved.quotes.some((quote) => quote.token === selectedQuote.token)
       ) {
         setSelected(selectedQuote);
         setTarget(
           Math.max(
             1,
-            Math.min(restoredGoal.budget, selectedQuote.total - 10000),
+            saved.pendingTarget ?? Math.min(restoredGoal.budget, selectedQuote.total - 10000),
           ),
         );
         setStep(4);
         setMessage(
-          "Хадгалсан багцыг нээлээ. Эцсийн нөхцөлийг шалгаж дахин зөвшөөрөөрэй.",
+          "Хадгалсан багцыг нээлээ. Хэлэлцээ эсвэл зөвшөөрлийн төлөвөө шалгаад үргэлжлүүлээрэй.",
         );
       } else {
         setStep(3);
@@ -823,8 +846,7 @@ export default function Home() {
         </header>
 
         <p className="notice">
-          Тайлангийн текстийг Gemini боловсруулна. Merchant саналууд demo
-          өгөгдөлтэй. Бодит захиалга, booking болон төлбөр холбогдоогүй.
+          Тайланг Gemini боловсруулна. Buyer нь Merchant агентуудаас A2A-аар санал авч, MCP-аар туршилтын захиалга, засварын цаг бүртгэнэ. Төлбөр mock хэвээр.
         </p>
 
         {requestId && (
@@ -1210,8 +1232,7 @@ export default function Home() {
             </p>
 
             <p>
-              Баталгаа: {selected.warranty}. Demo merchant гаднын сэлбэг хүлээн
-              авна.
+              Нөхцөл: {selected.warranty}
             </p>
 
             <p
@@ -1233,7 +1254,7 @@ export default function Home() {
                 : "Хүссэн хугацаанаас хэтэрнэ"}
             </p>
 
-            {selectedExpired && (
+            {selectedExpired && !checkout && pendingTarget === null && (
               <p className="unfit">
                 Саналын хугацаа дууссан. Дахин санал аваарай.
               </p>
@@ -1241,18 +1262,18 @@ export default function Home() {
 
             <button
               className="secondary"
-              disabled={disabled || !goalValid || !requestId}
+              disabled={disabled || !goalValid || !requestId || checkout !== null || pendingTarget !== null}
               onClick={() => void run(reloadRequestQuotes, true)}
             >
               Дахин санал авах
             </button>
 
-            {selected.revision === 1 && (
+            {selected.revision === 1 && !checkout && (
               <div className="negotiate">
                 <label>
                   Тохиролцох зорилтот үнэ
                   <input
-                    disabled={disabled || selectedExpired}
+                    disabled={disabled || selectedExpired || pendingTarget !== null}
                     type="number"
                     min="1"
                     value={target === 0 ? "" : target}
@@ -1264,16 +1285,36 @@ export default function Home() {
                   disabled={disabled || !targetValid}
                   onClick={() => void run(negotiate, true)}
                 >
-                  Үнэ тохиролцох
+                  {pendingTarget !== null ? "Хэлэлцээний хариу шалгах" : "Үнэ тохиролцох"}
                 </button>
               </div>
             )}
 
+            {selected.merchant && (
+              <div className="notice">
+                <p>Засварын цаг: {selected.merchant.booking.startsAt} → {selected.merchant.booking.endsAt}</p>
+                <details><summary>Сэлбэг, засварын нөхцөл</summary>
+                  <p className="report">{selected.merchant.parts.quote.terms}</p>
+                  <p className="report">{selected.merchant.repair.quote.terms}</p>
+                </details>
+              </div>
+            )}
+            {checkout && (
+              <div className="notice">
+                <p>Захиалгын дугаар: {checkout.transactionId}</p>
+                <p>Merchant хуудсыг нээж Зөвшөөрөх товчийг дарсны дараа энд үргэлжлүүлнэ.</p>
+                {checkout.approvalUrl && (
+                  <a className="secondary" href={checkout.approvalUrl} target="_blank" rel="noopener noreferrer">
+                    Merchant зөвшөөрлийн хуудас нээх ↗
+                  </a>
+                )}
+              </div>
+            )}
             <label className="approval">
               <input
                 type="checkbox"
-                disabled={disabled || selectedExpired}
-                checked={approved && !selectedExpired}
+                disabled={disabled || (selectedExpired && !checkout) || pendingTarget !== null}
+                checked={approved && (!selectedExpired || checkout !== null)}
                 onChange={(event) => setApproved(event.target.checked)}
               />
               {money(selected.total)} үнэтэй, {selected.days} хоногийн
@@ -1296,10 +1337,10 @@ export default function Home() {
               </button>
 
               <button
-                disabled={disabled || !approved || selectedExpired}
+                disabled={disabled || pendingTarget !== null || (!checkout && (!approved || selectedExpired))}
                 onClick={() => void run(confirm, true)}
               >
-                Confirm — Demo захиалах
+                {checkout ? "Зөвшөөрөл шалгаад захиалга үргэлжлүүлэх" : "Confirm — Зөвшөөрлийн холбоос авах"}
               </button>
             </div>
           </section>
@@ -1309,7 +1350,7 @@ export default function Home() {
           <section>
             <span className="tag green">DEMO COMPLETED</span>
             <h2>Туршилтын баримт бэлэн боллоо</h2>
-            <p>Энэ нь бодит резерв, booking эсвэл төлбөр биш.</p>
+            <p>{receipt.source === "merchant" ? "Merchant MongoDB-д туршилтын захиалга, booking бүртгэгдсэн. Төлбөр нь mock." : "Хуучин demo баримт. Merchant захиалгатай холбогдоогүй."}</p>
 
             <strong className="price">{money(receipt.quote.total)}</strong>
 

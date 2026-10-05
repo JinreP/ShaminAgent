@@ -19,7 +19,9 @@
     "merchant:phase4:smoke": "node --conditions=react-server --import tsx scripts/merchant-phase4-smoke.ts",
     "test:merchant:telegram": "node --conditions=react-server --import tsx scripts/merchant-telegram-local-test.ts",
     "test:merchant:negotiation": "node --conditions=react-server --import tsx scripts/merchant-negotiation-local-test.ts",
-    "test:merchant:commerce": "node --conditions=react-server --import tsx --test tests/merchant-commerce.integration.test.ts"
+    "test:merchant:commerce": "node --conditions=react-server --import tsx --test tests/merchant-commerce.integration.test.ts",
+    "buyer:merchant:setup": "node scripts/buyer-merchant-setup.mjs",
+    "test:buyer:merchant": "BUYER_MERCHANT_LOCAL_INTEGRATION=true node --conditions=react-server --import tsx --test tests/buyer-merchant.integration.test.ts"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.3.0",
